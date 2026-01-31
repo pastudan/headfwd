@@ -1,0 +1,44 @@
+---
+# Minimal Headscale configuration for HeadFwd development
+
+# URL clients will connect to
+server_url: http://127.0.0.1:8080
+
+# Listen on all interfaces (required for Docker)
+listen_addr: 0.0.0.0:8080
+
+# Noise protocol private key (auto-generated if missing)
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+# IP prefixes for the mesh network
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+
+# DERP relay configuration
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+  update_frequency: 24h
+
+# Database
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+# DNS with MagicDNS
+dns:
+  magic_dns: true
+  base_domain: headfwd.local
+  nameservers:
+    global:
+      - 1.1.1.1
+
+# Unix socket for CLI
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"

@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  # Headscale - Self-hosted Tailscale control plane
+  headscale:
+    image: headscale/headscale:latest
+    container_name: headscale
+    restart: unless-stopped
+    command: serve
+    ports:
+      - "8080:8080" # HTTP API
+      - "9090:9090" # Metrics (optional)
+      - "50443:50443" # gRPC (for clients)
+    volumes:
+      - ./headscale/config:/etc/headscale
+      - ./headscale/data:/var/lib/headscale
+    networks:
+      - headfwd-mesh
+
+  # Backend Service - Simple "Hello" service via Caddy
+  backend:
+    image: caddy:2-alpine
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./backend/Caddyfile:/etc/caddy/Caddyfile
+      - ./backend/site:/srv
+    networks:
+      - headfwd-mesh
+    depends_on:
+      - headscale
+
+networks:
+  headfwd-mesh:
+    driver: bridge
+
+volumes:
+  headscale-config:
+  headscale-data:

@@ -1,0 +1,7 @@
+# Headscale runtime data
+headscale/data/*
+!headscale/data/.gitkeep
+
+# Keep config directory structure
+!headscale/config/
+
