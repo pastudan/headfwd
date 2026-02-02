@@ -18,9 +18,9 @@ noise:
   private_key_path: /var/lib/headscale/noise_private.key
 
 # IP prefixes for the Tailscale network
-ip_prefixes:
-  - 100.64.0.0/10  # Standard Tailscale CGNAT range
-  - fd7a:115c:a1e0::/48  # IPv6 range
+prefixes:
+  v4: 100.64.0.0/10  # Standard Tailscale CGNAT range
+  v6: fd7a:115c:a1e0::/48  # IPv6 range
 
 # DERP configuration (relay servers)
 derp:
@@ -30,6 +30,7 @@ derp:
     region_code: "local"
     region_name: "Local DERP"
     stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
   
   # Use local DERP server
   urls: []
@@ -46,20 +47,21 @@ database:
     path: /var/lib/headscale/db.sqlite
 
 # Disable ephemeral nodes (keep nodes registered)
-ephemeral_node_inactivity_timeout: 0
+ephemeral_node_inactivity_timeout: 30m
 
 # DNS configuration
-dns_config:
+dns:
   override_local_dns: true
   nameservers:
-    - 1.1.1.1
-    - 8.8.8.8
+    global:
+      - 1.1.1.1
+      - 8.8.8.8
   
   # MagicDNS - .ts.net domains
   magic_dns: true
   base_domain: headfwd.local
   
-  domains: []
+  search_domains: []
 
 # Logging
 log:
@@ -67,7 +69,6 @@ log:
   format: text
 
 # Disable ACLs for development (allow all traffic)
-acl_policy_path: ""
 
 # Unix socket for CLI
 unix_socket: /var/run/headscale/headscale.sock
@@ -79,6 +80,6 @@ tls_key_path: ""
 
 # Policy configuration
 policy:
-  mode: deny
+  mode: file
   path: ""
 

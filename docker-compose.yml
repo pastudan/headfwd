@@ -12,7 +12,7 @@ services:
     volumes:
       - ./headscale/config:/etc/headscale
       - ./headscale/data:/var/lib/headscale
-    command: headscale serve
+    command: serve
     environment:
       - TZ=UTC
 
@@ -22,11 +22,14 @@ services:
     container_name: headfwd-sidecar
     restart: unless-stopped
     environment:
-      # Set these after registering with proxy
       - TUNNEL_URL=${TUNNEL_URL:-}
+      - PROXY_URL=${PROXY_URL:-http://localhost:8787}
       - HEADSCALE_URL=http://headscale:8080
+      - AUTO_REGISTER=${AUTO_REGISTER:-false}
+    volumes:
+      # Mount Headscale data directory for access to Noise private key
+      - ./headscale/data:/keys:ro
     depends_on:
       - headscale
-    # Comment out until you have TUNNEL_URL
     profiles:
       - with-tunnel

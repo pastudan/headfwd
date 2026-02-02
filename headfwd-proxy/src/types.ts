@@ -2,13 +2,19 @@
 
 export interface Env {
   TUNNELS: DurableObjectNamespace;
-  REGISTRY: KVNamespace;
+  REGISTRY?: KVNamespace;
   TUNNEL_SECRET: string;
 }
 
 export interface TunnelRegistration {
-  fingerprint: string;
+  publicKey: string;
   secret: string;
+  createdAt: number;
+}
+
+export interface ChallengeData {
+  publicKey: string;
+  nonce: string;
   createdAt: number;
 }
 
