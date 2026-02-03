@@ -43,7 +43,18 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 
 ## Quick Start
 
-### 1. Deploy Proxy (Cloudflare)
+### 1. Deploy Proxy
+
+**Option A: Fly.io (recommended for TS2021)**
+
+```bash
+cd headfwd-proxy-fly
+fly launch --no-deploy
+fly secrets set PUBLIC_HOST=headfwd.net
+fly deploy
+```
+
+**Option B: Cloudflare Workers (HTTP-only)**
 
 ```bash
 cd headfwd-proxy
@@ -52,6 +63,8 @@ npx wrangler kv namespace create REGISTRY
 # Update wrangler.jsonc with KV ID
 npm run deploy
 ```
+
+> **Note:** Tailscale TS2021 uses a custom HTTP Upgrade that Cloudflare Workers cannot proxy. Use Fly.io for full control-plane support.
 
 ### 2. Run Headscale + Sidecar
 

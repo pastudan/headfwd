@@ -4,6 +4,17 @@ Get Headscale accessible from anywhere in 3 steps.
 
 ## 1. Deploy Proxy (5 minutes)
 
+### Option A: Fly.io (recommended for TS2021)
+
+```bash
+cd headfwd-proxy-fly
+fly launch --no-deploy
+fly secrets set PUBLIC_HOST=headfwd.net
+fly deploy
+```
+
+### Option B: Cloudflare Workers (HTTP-only)
+
 ```bash
 cd headfwd-proxy
 npm install
@@ -26,6 +37,8 @@ npm run deploy
 # Workers & Pages → headfwd-proxy → Settings → Triggers
 # Add routes: headfwd.net/* and *.headfwd.net/*
 ```
+
+> **Note:** Tailscale TS2021 uses a custom HTTP Upgrade that Cloudflare Workers cannot proxy. Use Fly.io for full control-plane support.
 
 ## 2. Start Headscale + Sidecar (5 minutes)
 
@@ -134,4 +147,3 @@ docker compose logs headscale
 - **iOS App:** See `tailscale-ios-integration-plan.md`
 - **Production:** Use proper secrets, monitoring
 - **Multiple Nodes:** Connect more devices to your mesh
-

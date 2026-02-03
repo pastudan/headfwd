@@ -43,8 +43,11 @@ export interface TunnelMessage {
 
 export interface WsOpen {
   id: string;
+  method: string;
   url: string;
   headers: Record<string, string>;
+  body?: string;
+  isBinary?: boolean;
 }
 
 export interface WsData {

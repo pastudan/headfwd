@@ -1,0 +1,28 @@
+app = "headfwd-proxy"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  PUBLIC_SCHEME = "https"
+  # Set PUBLIC_HOST to your apex domain (e.g. headfwd.net) if you use a custom domain.
+  # PUBLIC_HOST = "headfwd.net"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]

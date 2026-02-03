@@ -223,6 +223,7 @@ export class HeadscaleTunnel implements DurableObject {
       type: 'ws_open',
       data: {
         id: wsId,
+        method: request.method,
         url: request.url,
         headers: Object.fromEntries(request.headers),
       } as WsOpen,

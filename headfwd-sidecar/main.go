@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -60,8 +61,11 @@ type TunnelResponse struct {
 
 type WsOpen struct {
 	ID      string            `json:"id"`
+	Method  string            `json:"method"`
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers"`
+	Body    *string           `json:"body,omitempty"`
+	IsBinary bool             `json:"isBinary,omitempty"`
 }
 
 type WsData struct {
@@ -349,8 +353,20 @@ func handleRequest(conn *websocket.Conn, data json.RawMessage) {
 	}
 }
 
-var wsMu = &sync.Mutex{}
-var wsConns = map[string]*websocket.Conn{}
+type streamConn struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+func (s *streamConn) write(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.Write(data)
+	return err
+}
+
+var streamMu = &sync.Mutex{}
+var streamConns = map[string]*streamConn{}
 
 func handleWsOpen(conn *websocket.Conn, data json.RawMessage) {
 	var open WsOpen
@@ -358,51 +374,64 @@ func handleWsOpen(conn *websocket.Conn, data json.RawMessage) {
 		log.Printf("Error unmarshaling ws_open: %v", err)
 		return
 	}
+	if open.Method == "" {
+		open.Method = http.MethodGet
+	}
 
-	// Build headscale WS URL from incoming request URL
-	targetURL, err := buildHeadscaleURL(open.URL, true)
+	targetAddr, err := headscaleDialAddress()
 	if err != nil {
-		log.Printf("Error building headscale ws URL: %v", err)
+		log.Printf("Error resolving headscale address: %v", err)
 		return
 	}
 
-	headers := http.Header{}
-	for k, v := range open.Headers {
-		headers.Set(k, v)
-	}
-	// Ensure Host matches headscale
-	headers.Set("Host", strings.TrimPrefix(*headscaleURL, "http://"))
-
-	ws, _, err := websocket.DefaultDialer.Dial(targetURL, headers)
+	rawConn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
-		log.Printf("Error dialing headscale ws: %v", err)
+		log.Printf("Error dialing headscale: %v", err)
 		return
 	}
 
-	wsMu.Lock()
-	wsConns[open.ID] = ws
-	wsMu.Unlock()
-
-	// Relay headscale -> proxy
-	go func(id string, wsConn *websocket.Conn) {
-		defer wsConn.Close()
-		for {
-			msgType, payload, err := wsConn.ReadMessage()
+	bodyBytes := []byte{}
+	if open.Body != nil {
+		if open.IsBinary {
+			decoded, err := base64.StdEncoding.DecodeString(*open.Body)
 			if err != nil {
-				sendWsClose(conn, id, 1000, "closed")
-				wsMu.Lock()
-				delete(wsConns, id)
-				wsMu.Unlock()
+				log.Printf("Error decoding stream body: %v", err)
+				_ = rawConn.Close()
 				return
 			}
-
-			if msgType == websocket.TextMessage {
-				sendWsData(conn, id, string(payload), false)
-			} else {
-				sendWsData(conn, id, base64.StdEncoding.EncodeToString(payload), true)
-			}
+			bodyBytes = decoded
+		} else {
+			bodyBytes = []byte(*open.Body)
 		}
-	}(open.ID, ws)
+	}
+
+	rawRequest := buildRawRequest(open.Method, open.URL, open.Headers, bodyBytes, targetAddr)
+	if _, err := rawConn.Write(rawRequest); err != nil {
+		log.Printf("Error writing raw request: %v", err)
+		_ = rawConn.Close()
+		return
+	}
+
+	streamMu.Lock()
+	streamConns[open.ID] = &streamConn{conn: rawConn}
+	streamMu.Unlock()
+
+	go func(id string, c net.Conn) {
+		defer c.Close()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := c.Read(buf)
+			if err != nil {
+				sendWsClose(conn, id, 1000, "closed")
+				streamMu.Lock()
+				delete(streamConns, id)
+				streamMu.Unlock()
+				return
+			}
+			payload := buf[:n]
+			sendWsData(conn, id, base64.StdEncoding.EncodeToString(payload), true)
+		}
+	}(open.ID, rawConn)
 }
 
 func handleWsData(data json.RawMessage) {
@@ -412,22 +441,24 @@ func handleWsData(data json.RawMessage) {
 		return
 	}
 
-	wsMu.Lock()
-	ws := wsConns[msg.ID]
-	wsMu.Unlock()
-	if ws == nil {
+	streamMu.Lock()
+	stream := streamConns[msg.ID]
+	streamMu.Unlock()
+	if stream == nil {
 		return
 	}
 
+	payload := []byte(msg.Data)
 	if msg.IsBinary {
-		payload, err := base64.StdEncoding.DecodeString(msg.Data)
+		decoded, err := base64.StdEncoding.DecodeString(msg.Data)
 		if err != nil {
-			log.Printf("Error decoding ws binary data: %v", err)
+			log.Printf("Error decoding stream data: %v", err)
 			return
 		}
-		ws.WriteMessage(websocket.BinaryMessage, payload)
-	} else {
-		ws.WriteMessage(websocket.TextMessage, []byte(msg.Data))
+		payload = decoded
+	}
+	if err := stream.write(payload); err != nil {
+		log.Printf("Error writing stream data: %v", err)
 	}
 }
 
@@ -437,12 +468,12 @@ func handleWsClose(data json.RawMessage) {
 		log.Printf("Error unmarshaling ws_close: %v", err)
 		return
 	}
-	wsMu.Lock()
-	ws := wsConns[msg.ID]
-	delete(wsConns, msg.ID)
-	wsMu.Unlock()
-	if ws != nil {
-		ws.Close()
+	streamMu.Lock()
+	stream := streamConns[msg.ID]
+	delete(streamConns, msg.ID)
+	streamMu.Unlock()
+	if stream != nil {
+		stream.conn.Close()
 	}
 }
 
@@ -594,6 +625,56 @@ func buildHeadscaleURL(requestURL string, ws bool) (string, error) {
 		base.Scheme = strings.Replace(base.Scheme, "http", "ws", 1)
 	}
 	return base.String(), nil
+}
+
+func headscaleDialAddress() (string, error) {
+	u, err := url.Parse(*headscaleURL)
+	if err != nil {
+		return "", err
+	}
+	host := u.Host
+	if host == "" {
+		host = strings.TrimPrefix(*headscaleURL, "http://")
+		host = strings.TrimPrefix(host, "https://")
+	}
+	if !strings.Contains(host, ":") {
+		if u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
+	}
+	return host, nil
+}
+
+func buildRawRequest(method, requestURL string, headers map[string]string, body []byte, host string) []byte {
+	u, _ := url.Parse(requestURL)
+	path := u.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%s %s HTTP/1.1\r\n", method, path)
+	hasContentLength := false
+	for k, v := range headers {
+		if strings.EqualFold(k, "Host") {
+			continue
+		}
+		if strings.EqualFold(k, "Content-Length") {
+			hasContentLength = true
+		}
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	fmt.Fprintf(&buf, "Host: %s\r\n", host)
+	if len(body) > 0 && !hasContentLength {
+		fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(body))
+	}
+	fmt.Fprintf(&buf, "\r\n")
+	if len(body) > 0 {
+		buf.Write(body)
+	}
+	return buf.Bytes()
 }
 
 func stringPtr(s string) *string { return &s }

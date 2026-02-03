@@ -55,10 +55,30 @@ FINGERPRINT="$(printf '%s' "$PUBKEY" | openssl dgst -sha256 -r | awk '{print sub
 echo "Headscale public key: $PUBKEY"
 echo "Fingerprint: $FINGERPRINT"
 
-info "Deploying Cloudflare worker..."
-cd "$ROOT_DIR/headfwd-proxy"
-npm run deploy
-cd "$ROOT_DIR"
+echo "Deploy proxy?"
+echo "1) Fly.io (fly deploy)"
+echo "2) Cloudflare (npm run deploy)"
+echo "3) Skip"
+read -r -p "Enter 1, 2, or 3 (default 1): " deploy_mode
+deploy_mode="${deploy_mode:-1}"
+
+if [[ "$deploy_mode" == "1" ]]; then
+  info "Deploying Fly.io proxy..."
+  if command -v fly >/dev/null 2>&1; then
+    cd "$ROOT_DIR/headfwd-proxy-fly"
+    fly deploy
+    cd "$ROOT_DIR"
+  else
+    echo "flyctl not found; skipping deploy."
+  fi
+elif [[ "$deploy_mode" == "2" ]]; then
+  info "Deploying Cloudflare worker..."
+  cd "$ROOT_DIR/headfwd-proxy"
+  npm run deploy
+  cd "$ROOT_DIR"
+else
+  info "Skipping proxy deploy."
+fi
 
 info "Waiting for tunnel to connect..."
 CONNECTED=false
