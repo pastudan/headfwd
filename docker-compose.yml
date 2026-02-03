@@ -22,14 +22,10 @@ services:
     container_name: headfwd-sidecar
     restart: unless-stopped
     environment:
-      - TUNNEL_URL=${TUNNEL_URL:-}
-      - PROXY_URL=${PROXY_URL:-http://localhost:8787}
-      - HEADSCALE_URL=http://headscale:8080
-      - AUTO_REGISTER=${AUTO_REGISTER:-false}
+      AUTO_REGISTER: ${AUTO_REGISTER:-true}
     volumes:
       # Mount Headscale data directory for access to Noise private key
       - ./headscale/data:/keys:ro
+      - ./headscale/config:/config
     depends_on:
       - headscale
-    profiles:
-      - with-tunnel

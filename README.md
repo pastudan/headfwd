@@ -115,6 +115,7 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 - **Ed25519 Signatures** - Noise private key signs registration challenges
 - **Time-Limited Challenges** - 5-minute nonce expiration prevents replay attacks
 - **No Subdomain Enumeration** - Can't guess valid tunnels without private key
+- **Never Trust the Proxy** - Fingerprints must be derived locally from Headscale's Noise public key and proxy-provided URLs must be verified against local derivation
 
 For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATION.md).
 

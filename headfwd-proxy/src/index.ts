@@ -9,9 +9,7 @@
  */
 
 import type { Env } from './types';
-import { HeadscaleTunnel } from './tunnel-do';
-
-export { HeadscaleTunnel };
+export { HeadscaleTunnel } from './tunnel-do';
 
 // In-memory storage for local development (when KV is not available)
 const localChallenges = new Map<string, { publicKey: string; nonce: string; ephemeralPrivateKeyJwk: JsonWebKey; expiresAt: number }>();
@@ -285,7 +283,7 @@ async function handleRegisterVerify(request: Request, env: Env): Promise<Respons
 
 		// Compute shared secret via X25519 ECDH
 		const sharedSecret = await crypto.subtle.deriveBits(
-			{ name: 'X25519', $public: sidecarPublicKey } as SubtleCryptoDeriveKeyAlgorithm,
+			{ name: 'X25519', public: sidecarPublicKey } as SubtleCryptoDeriveKeyAlgorithm,
 			proxyPrivateKey,
 			256 // 32 bytes
 		);

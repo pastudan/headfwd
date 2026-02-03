@@ -59,6 +59,7 @@ sequenceDiagram
 - **Collision Probability**: ~1 in 340 undecillion
 - **Brute Force**: Would take billions of years with current computing
 - **Enumeration**: Cannot guess valid subdomains without the private key
+- **Never Trust the Proxy**: Clients must derive the fingerprint locally and validate any proxy-provided URLs or fingerprints
 
 ## Authentication Protocol
 
