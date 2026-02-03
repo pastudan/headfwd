@@ -1,28 +1,36 @@
-app = "headfwd-proxy"
-primary_region = "ord"
+# fly.toml app configuration file generated for headfwd-proxy on 2026-02-03T01:39:31-08:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'headfwd-proxy'
+primary_region = 'sjc'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
-  PUBLIC_SCHEME = "https"
-  # Set PUBLIC_HOST to your apex domain (e.g. headfwd.net) if you use a custom domain.
-  # PUBLIC_HOST = "headfwd.net"
+  PORT = '8080'
+  PUBLIC_SCHEME = 'https'
 
 [[services]]
+  protocol = 'tcp'
   internal_port = 8080
-  protocol = "tcp"
-
-  [services.concurrency]
-    type = "connections"
-    hard_limit = 1000
-    soft_limit = 800
 
   [[services.ports]]
     port = 80
-    handlers = ["http"]
+    handlers = ['http']
 
   [[services.ports]]
     port = 443
-    handlers = ["tls", "http"]
+    handlers = ['tls', 'http']
+
+  [services.concurrency]
+    type = 'connections'
+    hard_limit = 1000
+    soft_limit = 800
+
+[[vm]]
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256

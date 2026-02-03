@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"context"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,6 +34,8 @@ var (
 	configPath     = flag.String("config", "/config/config.yaml", "Headscale config path for server_url updates")
 	updateConfig   = flag.Bool("update-config", true, "Update headscale server_url when auto-registering")
 	forceUpdate    = flag.Bool("force-update", false, "Force update headscale server_url even if already set")
+	restartHeadscale = flag.Bool("restart-headscale", false, "Restart headscale container after updating server_url")
+	headscaleContainer = flag.String("headscale-container", "headscale", "Docker container name for headscale")
 	reconnectDelay = flag.Duration("reconnect", 5*time.Second, "Reconnect delay")
 )
 
@@ -144,6 +147,16 @@ func main() {
 			}
 		}
 	}
+	if !*restartHeadscale {
+		if v, ok := os.LookupEnv("RESTART_HEADSCALE"); ok && v != "" && strings.ToLower(v) != "false" && v != "0" {
+			restartHeadscale = func() *bool { b := true; return &b }()
+		}
+	}
+	if *headscaleContainer == "headscale" {
+		if v, ok := os.LookupEnv("HEADSCALE_CONTAINER_NAME"); ok && v != "" {
+			headscaleContainer = &v
+		}
+	}
 	if !*forceUpdate {
 		if v, ok := os.LookupEnv("FORCE_UPDATE_SERVER_URL"); ok && v != "" && strings.ToLower(v) != "false" && v != "0" {
 			forceUpdate = func() *bool { b := true; return &b }()
@@ -174,7 +187,16 @@ func main() {
 				log.Printf("Config update skipped: %v", err)
 			} else if updated {
 				log.Printf("✓ Updated headscale server_url in %s", *configPath)
-				log.Printf("Please restart headscale for the change to take effect.")
+				if *restartHeadscale {
+					if err := restartHeadscaleContainer(*headscaleContainer); err != nil {
+						log.Printf("Failed to restart headscale: %v", err)
+						log.Printf("Please restart headscale for the change to take effect.")
+					} else {
+						log.Printf("✓ Restarted headscale container: %s", *headscaleContainer)
+					}
+				} else {
+					log.Printf("Please restart headscale for the change to take effect.")
+				}
 			}
 		}
 	}
@@ -675,6 +697,36 @@ func buildRawRequest(method, requestURL string, headers map[string]string, body 
 		buf.Write(body)
 	}
 	return buf.Bytes()
+}
+
+func restartHeadscaleContainer(container string) error {
+	socketPath := "/var/run/docker.sock"
+	if _, err := os.Stat(socketPath); err != nil {
+		return fmt.Errorf("docker socket not available: %w", err)
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("unix", socketPath)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+
+	req, err := http.NewRequest(http.MethodPost, "http://docker/containers/"+container+"/restart", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("docker restart failed: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func stringPtr(s string) *string { return &s }
