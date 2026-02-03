@@ -2,16 +2,19 @@
  * HeadFwd Proxy - Reverse tunnel for Headscale instances
  *
  * Routes client requests to Headscale instances behind NAT via persistent WebSocket tunnels
+ *
+ * Authentication: X25519 ECDH + HMAC-SHA256 challenge-response
+ * The sidecar proves ownership of the Headscale Noise private key (X25519)
+ * by computing a shared secret with the proxy's ephemeral key and HMACing a nonce.
  */
 
 import type { Env } from './types';
 import { HeadscaleTunnel } from './tunnel-do';
-import { ed25519 } from '@noble/curves/ed25519.js';
 
 export { HeadscaleTunnel };
 
 // In-memory storage for local development (when KV is not available)
-const localChallenges = new Map<string, { publicKey: string; nonce: string; expiresAt: number }>();
+const localChallenges = new Map<string, { publicKey: string; nonce: string; ephemeralPrivateKeyJwk: JsonWebKey; expiresAt: number }>();
 const localRegistrations = new Map<string, { publicKey: string; secret: string }>();
 
 // Helper to cleanup expired challenges on-demand
@@ -130,14 +133,11 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * Phase 1: Initialize registration - get challenge nonce
+ * Phase 1: Initialize registration - generate ephemeral X25519 keypair and challenge nonce
  */
 async function handleRegisterInit(request: Request, env: Env): Promise<Response> {
 	try {
-		const { publicKey, ed25519PublicKey } = (await request.json()) as { 
-			publicKey: string; 
-			ed25519PublicKey?: string;
-		};
+		const { publicKey } = (await request.json()) as { publicKey: string };
 
 		if (!publicKey) {
 			return new Response(JSON.stringify({ error: 'Missing publicKey' }), {
@@ -154,32 +154,44 @@ async function handleRegisterInit(request: Request, env: Env): Promise<Response>
 			});
 		}
 
-		// Compute fingerprint from Curve25519 Noise public key
+		// Compute fingerprint from X25519 Noise public key
 		const fingerprint = await computeFingerprint(publicKey);
 
 		// Generate challenge nonce (32 bytes = 64 hex chars)
 		const nonce = generateNonce();
 
+		// Generate ephemeral X25519 keypair for ECDH
+		const ephemeralKeypair = await crypto.subtle.generateKey(
+			{ name: 'X25519' },
+			true, // extractable (need to store private key for verification)
+			['deriveBits']
+		) as CryptoKeyPair;
+
+		// Export ephemeral public key (raw bytes) to send to sidecar
+		const ephemeralPublicRaw = await crypto.subtle.exportKey('raw', ephemeralKeypair.publicKey) as ArrayBuffer;
+
+		// Export ephemeral private key (JWK) to store for later ECDH
+		const ephemeralPrivateKeyJwk = await crypto.subtle.exportKey('jwk', ephemeralKeypair.privateKey) as JsonWebKey;
+
 		// Store challenge with 5-minute expiration
-		// Include both Curve25519 key (for fingerprint) and Ed25519 key (for verification)
 		const expiresAt = Date.now() + 300000;
 		if (env.REGISTRY) {
 			await env.REGISTRY.put(
 				`challenge:${fingerprint}`,
 				JSON.stringify({
 					publicKey,
-					ed25519PublicKey: ed25519PublicKey || publicKey, // Use Ed25519 key if provided
 					nonce,
+					ephemeralPrivateKeyJwk,
 					createdAt: Date.now(),
 				}),
 				{ expirationTtl: 300 } // 5 minutes
 			);
 		} else {
-			// Use in-memory storage for local dev
-			localChallenges.set(fingerprint, { 
-				publicKey: ed25519PublicKey || publicKey, // Store Ed25519 key for verification
-				nonce, 
-				expiresAt 
+			localChallenges.set(fingerprint, {
+				publicKey,
+				nonce,
+				ephemeralPrivateKeyJwk,
+				expiresAt,
 			});
 		}
 
@@ -187,7 +199,8 @@ async function handleRegisterInit(request: Request, env: Env): Promise<Response>
 			JSON.stringify({
 				fingerprint,
 				nonce,
-				expiresAt: Date.now() + 300000, // 5 minutes from now
+				proxyPublicKey: bufferToHex(ephemeralPublicRaw),
+				expiresAt,
 			}),
 			{ headers: { 'Content-Type': 'application/json' } }
 		);
@@ -200,14 +213,18 @@ async function handleRegisterInit(request: Request, env: Env): Promise<Response>
 }
 
 /**
- * Phase 2: Verify signature and complete registration
+ * Phase 2: Verify HMAC proof via X25519 ECDH shared secret
+ *
+ * The sidecar computed: HMAC-SHA256(ECDH(sidecarPrivate, proxyEphemeralPublic), nonce)
+ * We compute:           HMAC-SHA256(ECDH(proxyEphemeralPrivate, sidecarPublic), nonce)
+ * Both shared secrets are identical (ECDH property), so the HMACs must match.
  */
 async function handleRegisterVerify(request: Request, env: Env): Promise<Response> {
 	try {
-		const { fingerprint, signature } = (await request.json()) as { fingerprint: string; signature: string };
+		const { fingerprint, proof } = (await request.json()) as { fingerprint: string; proof: string };
 
-		if (!fingerprint || !signature) {
-			return new Response(JSON.stringify({ error: 'Missing fingerprint or signature' }), {
+		if (!fingerprint || !proof) {
+			return new Response(JSON.stringify({ error: 'Missing fingerprint or proof' }), {
 				status: 400,
 				headers: { 'Content-Type': 'application/json' },
 			});
@@ -216,7 +233,8 @@ async function handleRegisterVerify(request: Request, env: Env): Promise<Respons
 		// Retrieve challenge
 		let publicKey: string;
 		let nonce: string;
-		
+		let ephemeralPrivateKeyJwk: JsonWebKey;
+
 		if (env.REGISTRY) {
 			const challengeData = await env.REGISTRY.get(`challenge:${fingerprint}`);
 			if (!challengeData) {
@@ -228,9 +246,9 @@ async function handleRegisterVerify(request: Request, env: Env): Promise<Respons
 			const parsed = JSON.parse(challengeData);
 			publicKey = parsed.publicKey;
 			nonce = parsed.nonce;
+			ephemeralPrivateKeyJwk = parsed.ephemeralPrivateKeyJwk;
 		} else {
-			// Use in-memory storage for local dev
-			cleanupExpiredChallenges(); // Clean up expired challenges
+			cleanupExpiredChallenges();
 			const challenge = localChallenges.get(fingerprint);
 			if (!challenge || challenge.expiresAt < Date.now()) {
 				localChallenges.delete(fingerprint);
@@ -241,18 +259,63 @@ async function handleRegisterVerify(request: Request, env: Env): Promise<Respons
 			}
 			publicKey = challenge.publicKey;
 			nonce = challenge.nonce;
+			ephemeralPrivateKeyJwk = challenge.ephemeralPrivateKeyJwk;
 		}
 
-		// Verify signature using Noise public key
-		const isValid = await verifyNoiseSignature(publicKey, nonce, signature);
-		if (!isValid) {
-			return new Response(JSON.stringify({ error: 'Invalid signature' }), {
+		// Parse sidecar's X25519 public key (remove "mkey:" prefix, decode hex)
+		const sidecarPublicKeyBytes = hexToBytes(publicKey.slice(5));
+
+		// Import sidecar's X25519 public key
+		const sidecarPublicKey = await crypto.subtle.importKey(
+			'raw',
+			sidecarPublicKeyBytes,
+			{ name: 'X25519' },
+			false,
+			[]
+		);
+
+		// Import proxy's ephemeral private key
+		const proxyPrivateKey = await crypto.subtle.importKey(
+			'jwk',
+			ephemeralPrivateKeyJwk,
+			{ name: 'X25519' },
+			false,
+			['deriveBits']
+		);
+
+		// Compute shared secret via X25519 ECDH
+		const sharedSecret = await crypto.subtle.deriveBits(
+			{ name: 'X25519', $public: sidecarPublicKey } as SubtleCryptoDeriveKeyAlgorithm,
+			proxyPrivateKey,
+			256 // 32 bytes
+		);
+
+		// Compute expected HMAC proof
+		const hmacKey = await crypto.subtle.importKey(
+			'raw',
+			sharedSecret,
+			{ name: 'HMAC', hash: 'SHA-256' },
+			false,
+			['sign']
+		);
+
+		const expectedProofBuffer = await crypto.subtle.sign(
+			'HMAC',
+			hmacKey,
+			new TextEncoder().encode(nonce)
+		);
+
+		const expectedProof = bufferToHex(expectedProofBuffer);
+
+		// Constant-time comparison to prevent timing attacks
+		if (!timingSafeEqual(proof, expectedProof)) {
+			return new Response(JSON.stringify({ error: 'Invalid proof' }), {
 				status: 403,
 				headers: { 'Content-Type': 'application/json' },
 			});
 		}
 
-		// Generate tunnel secret
+		// Authenticated! Generate tunnel secret
 		const secret = generateSecret();
 
 		// Store registration
@@ -270,7 +333,6 @@ async function handleRegisterVerify(request: Request, env: Env): Promise<Respons
 			// Clean up challenge
 			await env.REGISTRY.delete(`challenge:${fingerprint}`);
 		} else {
-			// Use in-memory storage for local dev
 			localRegistrations.set(fingerprint, { publicKey, secret });
 			localChallenges.delete(fingerprint);
 		}
@@ -342,34 +404,24 @@ function generateNonce(): string {
 }
 
 /**
- * Verify Ed25519 signature
- * 
- * The sidecar converts the Curve25519 Noise private key to Ed25519 for signing.
- * We receive the Ed25519 public key directly and use it for verification.
+ * Constant-time string comparison to prevent timing attacks
  */
-async function verifyNoiseSignature(publicKeyStr: string, nonce: string, signatureHex: string): Promise<boolean> {
-	try {
-		// Parse Ed25519 public key (hex string, no prefix)
-		let ed25519PublicKey: Uint8Array;
-		
-		if (publicKeyStr.startsWith('mkey:')) {
-			// Legacy: Curve25519 key - won't work for verification
-			console.error('Received Curve25519 key instead of Ed25519 key');
-			return false;
-		} else {
-			// Ed25519 public key in hex format
-			ed25519PublicKey = hexToBytes(publicKeyStr);
-		}
-
-		// Verify signature using @noble/curves
-		const nonceBytes = new TextEncoder().encode(nonce);
-		const signatureBytes = hexToBytes(signatureHex);
-
-		return ed25519.verify(signatureBytes, nonceBytes, ed25519PublicKey);
-	} catch (error) {
-		console.error('Signature verification failed:', error);
-		return false;
+function timingSafeEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let result = 0;
+	for (let i = 0; i < a.length; i++) {
+		result |= a.charCodeAt(i) ^ b.charCodeAt(i);
 	}
+	return result === 0;
+}
+
+/**
+ * Convert ArrayBuffer to hex string
+ */
+function bufferToHex(buffer: ArrayBuffer): string {
+	return Array.from(new Uint8Array(buffer))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
 }
 
 /**

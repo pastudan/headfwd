@@ -2,8 +2,9 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/sha512"
+	"crypto/ecdh"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -55,19 +57,19 @@ type HeadscaleKeyResponse struct {
 }
 
 type RegistrationInitRequest struct {
-	PublicKey        string `json:"publicKey"`        // Curve25519 key for fingerprint
-	Ed25519PublicKey string `json:"ed25519PublicKey"` // Ed25519 key for signature verification
+	PublicKey string `json:"publicKey"` // X25519 Noise public key
 }
 
 type RegistrationInitResponse struct {
-	Fingerprint string `json:"fingerprint"`
-	Nonce       string `json:"nonce"`
-	ExpiresAt   int64  `json:"expiresAt"`
+	Fingerprint    string `json:"fingerprint"`
+	Nonce          string `json:"nonce"`
+	ProxyPublicKey string `json:"proxyPublicKey"` // Proxy's ephemeral X25519 public key
+	ExpiresAt      int64  `json:"expiresAt"`
 }
 
 type RegistrationVerifyRequest struct {
 	Fingerprint string `json:"fingerprint"`
-	Signature   string `json:"signature"`
+	Proof       string `json:"proof"` // HMAC-SHA256(sharedSecret, nonce)
 }
 
 type RegistrationVerifyResponse struct {
@@ -253,9 +255,15 @@ func mustMarshal(v interface{}) json.RawMessage {
 	return b
 }
 
-// registerWithProxy performs challenge-response registration with the proxy
+// registerWithProxy performs X25519 ECDH + HMAC-SHA256 challenge-response registration
 func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (string, error) {
-	// 1. Get Headscale's Noise public key (Curve25519)
+	// 1. Load X25519 private key from Headscale
+	x25519Key, err := loadNoisePrivateKey(noiseKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to load noise key: %w", err)
+	}
+
+	// 2. Get Headscale's Noise public key (X25519)
 	resp, err := http.Get(headscaleURL + "/key?v=96")
 	if err != nil {
 		return "", fmt.Errorf("failed to get Headscale key: %w", err)
@@ -267,21 +275,11 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (string, err
 		return "", fmt.Errorf("failed to decode key: %w", err)
 	}
 
-	log.Printf("Headscale Curve25519 public key: %s", keyData.PublicKey)
+	log.Printf("Headscale X25519 public key: %s", keyData.PublicKey)
 
-	// 2. Convert Curve25519 private key to Ed25519 and get Ed25519 public key
-	ed25519PublicKey, err := getEd25519PublicKey(noiseKeyPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to get Ed25519 public key: %w", err)
-	}
-	
-	log.Printf("Ed25519 public key for signing: %x", ed25519PublicKey)
-
-	// 3. Initialize registration with Curve25519 key (for fingerprint) and Ed25519 key (for verification)
-	// We send both: Curve25519 for fingerprint computation, Ed25519 for signature verification
+	// 3. Phase 1: Request challenge
 	initReq := RegistrationInitRequest{
-		PublicKey: keyData.PublicKey, // Curve25519 key for fingerprint
-		Ed25519PublicKey: hex.EncodeToString(ed25519PublicKey), // Ed25519 key for verification
+		PublicKey: keyData.PublicKey,
 	}
 	initBody, _ := json.Marshal(initReq)
 
@@ -303,16 +301,41 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (string, err
 
 	log.Printf("Challenge received: fingerprint=%s", initResp.Fingerprint)
 
-	// 3. Sign the nonce with Noise private key
-	signature, err := signWithNoiseKey(noiseKeyPath, initResp.Nonce)
+	// 4. Decode proxy's ephemeral X25519 public key
+	proxyPublicKeyBytes, err := hex.DecodeString(initResp.ProxyPublicKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign nonce: %w", err)
+		return "", fmt.Errorf("failed to decode proxy public key: %w", err)
 	}
 
-	// 4. Verify registration
+	// 5. Compute shared secret via X25519 ECDH
+	curve := ecdh.X25519()
+
+	sidecarPrivateKey, err := curve.NewPrivateKey(x25519Key)
+	if err != nil {
+		return "", fmt.Errorf("failed to create X25519 private key: %w", err)
+	}
+
+	proxyPublicKey, err := curve.NewPublicKey(proxyPublicKeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to create proxy public key: %w", err)
+	}
+
+	sharedSecret, err := sidecarPrivateKey.ECDH(proxyPublicKey)
+	if err != nil {
+		return "", fmt.Errorf("ECDH failed: %w", err)
+	}
+
+	// 6. Compute HMAC-SHA256 proof
+	h := hmac.New(sha256.New, sharedSecret)
+	h.Write([]byte(initResp.Nonce))
+	proof := hex.EncodeToString(h.Sum(nil))
+
+	log.Printf("Computed HMAC proof")
+
+	// 7. Phase 2: Submit proof for verification
 	verifyReq := RegistrationVerifyRequest{
 		Fingerprint: initResp.Fingerprint,
-		Signature:   signature,
+		Proof:       proof,
 	}
 	verifyBody, _ := json.Marshal(verifyReq)
 
@@ -336,17 +359,10 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (string, err
 	return verifyResp.TunnelURL, nil
 }
 
-// signWithNoiseKey signs data using the Noise private key (Curve25519)
-// 
-// Headscale's Noise protocol uses Curve25519 keys for ECDH key exchange.
-// We convert the Curve25519 private key to Ed25519 for signing.
-//
-// Conversion: SHA-512 hash of the 32-byte Curve25519 seed, use first 32 bytes as Ed25519 seed.
-// This is a standard transformation used by many cryptographic libraries.
-func signWithNoiseKey(keyPath, nonce string) (string, error) {
+// loadNoisePrivateKey reads Headscale's X25519 Noise private key from disk
+func loadNoisePrivateKey(keyPath string) ([]byte, error) {
 	// Auto-detect key path if not specified
 	if keyPath == "" {
-		// Try common locations
 		paths := []string{
 			"/var/lib/headscale/noise_private.key",
 			"/keys/noise_private.key",
@@ -359,105 +375,31 @@ func signWithNoiseKey(keyPath, nonce string) (string, error) {
 			}
 		}
 		if keyPath == "" {
-			return "", fmt.Errorf("could not find Noise private key. Specify with --noise-key")
+			return nil, fmt.Errorf("could not find Noise private key. Specify with --noise-key")
 		}
 	}
 
-	// Read Curve25519 private key from Headscale format
 	keyData, err := os.ReadFile(keyPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read Noise private key from %s: %w", keyPath, err)
+		return nil, fmt.Errorf("failed to read Noise private key from %s: %w", keyPath, err)
 	}
 
 	// Parse Headscale's key format: "privkey:hex_encoded_32_bytes"
-	keyStr := string(keyData)
-	if len(keyStr) < 8 || keyStr[:8] != "privkey:" {
-		return "", fmt.Errorf("invalid Noise key format: expected 'privkey:' prefix")
+	keyStr := strings.TrimSpace(string(keyData))
+	if !strings.HasPrefix(keyStr, "privkey:") {
+		return nil, fmt.Errorf("invalid Noise key format: expected 'privkey:' prefix")
 	}
-	
-	keyHex := keyStr[8:] // Remove "privkey:" prefix
-	
-	// Remove trailing whitespace (newlines, etc.)
-	for len(keyHex) > 0 && (keyHex[len(keyHex)-1] == '\n' || keyHex[len(keyHex)-1] == '\r' || keyHex[len(keyHex)-1] == ' ') {
-		keyHex = keyHex[:len(keyHex)-1]
-	}
-	
-	// Decode hex to bytes (should be 32 bytes for Curve25519)
-	curve25519Key, err := hex.DecodeString(keyHex)
+
+	keyHex := strings.TrimPrefix(keyStr, "privkey:")
+	privateKey, err := hex.DecodeString(keyHex)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode Noise key hex: %w", err)
-	}
-	
-	if len(curve25519Key) != 32 {
-		return "", fmt.Errorf("invalid Curve25519 key: expected 32 bytes, got %d", len(curve25519Key))
+		return nil, fmt.Errorf("failed to decode Noise key hex: %w", err)
 	}
 
-	// Convert Curve25519 private key to Ed25519 private key
-	// Method: Hash the Curve25519 key with SHA-512, use first 32 bytes as Ed25519 seed
-	hash := sha512.Sum512(curve25519Key)
-	ed25519Seed := hash[:32]
-	
-	// Generate Ed25519 keypair from the seed
-	ed25519PrivateKey := ed25519.NewKeyFromSeed(ed25519Seed)
-
-	// Sign the nonce
-	nonceBytes := []byte(nonce)
-	signature := ed25519.Sign(ed25519PrivateKey, nonceBytes)
-
-	return hex.EncodeToString(signature), nil
-}
-
-// getEd25519PublicKey converts Curve25519 private key to Ed25519 public key
-func getEd25519PublicKey(keyPath string) ([]byte, error) {
-	// Auto-detect key path if not specified
-	if keyPath == "" {
-		paths := []string{
-			"/var/lib/headscale/noise_private.key",
-			"/keys/noise_private.key",
-			"./headscale/data/noise_private.key",
-		}
-		for _, p := range paths {
-			if _, err := os.Stat(p); err == nil {
-				keyPath = p
-				break
-			}
-		}
-		if keyPath == "" {
-			return nil, fmt.Errorf("could not find Noise private key")
-		}
+	if len(privateKey) != 32 {
+		return nil, fmt.Errorf("invalid X25519 key: expected 32 bytes, got %d", len(privateKey))
 	}
 
-	// Read and parse Curve25519 private key
-	keyData, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read Noise private key: %w", err)
-	}
-
-	keyStr := string(keyData)
-	if len(keyStr) < 8 || keyStr[:8] != "privkey:" {
-		return nil, fmt.Errorf("invalid Noise key format")
-	}
-	
-	keyHex := keyStr[8:]
-	for len(keyHex) > 0 && (keyHex[len(keyHex)-1] == '\n' || keyHex[len(keyHex)-1] == '\r' || keyHex[len(keyHex)-1] == ' ') {
-		keyHex = keyHex[:len(keyHex)-1]
-	}
-	
-	curve25519Key, err := hex.DecodeString(keyHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode key: %w", err)
-	}
-	
-	if len(curve25519Key) != 32 {
-		return nil, fmt.Errorf("invalid key length: %d", len(curve25519Key))
-	}
-
-	// Convert to Ed25519
-	hash := sha512.Sum512(curve25519Key)
-	ed25519Seed := hash[:32]
-	ed25519PrivateKey := ed25519.NewKeyFromSeed(ed25519Seed)
-	ed25519PublicKey := ed25519PrivateKey.Public().(ed25519.PublicKey)
-
-	return ed25519PublicKey, nil
+	return privateKey, nil
 }
 

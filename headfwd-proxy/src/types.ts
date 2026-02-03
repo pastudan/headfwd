@@ -15,6 +15,7 @@ export interface TunnelRegistration {
 export interface ChallengeData {
   publicKey: string;
   nonce: string;
+  ephemeralPrivateKeyJwk: JsonWebKey;
   createdAt: number;
 }
 

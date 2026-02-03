@@ -121,6 +121,49 @@ Content-Type: application/json
    - Return tunnel credentials
 4. If invalid: Return 403 Forbidden
 
+## Client Verification (Custom Clients)
+
+This section documents an **optional online proof** for custom clients that want to treat the proxy as a dumb forwarder.
+It uses the existing Headscale Noise X25519 key and does **not** introduce new key material.
+
+### Step 0: Verify Fingerprint Matches `/key`
+
+1. Client fetches the public key from the Headscale control server:
+   - `GET /key?v=96` → `mkey:...`
+2. Client computes `fingerprint = SHA256(publicKey).substring(0, 32)`
+3. Client verifies the fingerprint matches the subdomain it connected to.
+
+If the fingerprint does **not** match, the client must abort. This detects a proxy misroute or key substitution.
+
+### Step 1 (Planned): Online Attestation Using Noise Key
+
+Add a small endpoint (e.g. `/api/attest`) on the Headscale sidecar to prove possession of the Noise private key.
+
+**Request:**
+```json
+{
+  "clientPublicKey": "<hex X25519 public key>",
+  "nonce": "<random 32 bytes, hex>"
+}
+```
+
+**Server behavior:**
+1. Compute `sharedSecret = X25519(noisePrivateKey, clientPublicKey)`
+2. Return `proof = HMAC-SHA256(sharedSecret, nonce)`
+
+**Response:**
+```json
+{
+  "proof": "<hex HMAC>"
+}
+```
+
+**Client verification:**
+1. Compute the same `sharedSecret = X25519(clientPrivateKey, serverPublicKey)`
+2. Verify `HMAC-SHA256(sharedSecret, nonce)` matches the response
+
+This provides an **interactive proof of key possession** without adding new keys.
+
 ## Cryptographic Details
 
 ### Key Types
@@ -232,4 +275,3 @@ The sidecar automatically searches for Noise private key in:
 - [Ed25519 Signature Scheme](https://ed25519.cr.yp.to/)
 - [Cloudflare Workers KV](https://developers.cloudflare.com/kv/)
 - [Headscale Documentation](https://headscale.net/)
-
