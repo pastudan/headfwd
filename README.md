@@ -38,11 +38,23 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 
 - **`headfwd-proxy/`** - Cloudflare Workers + Durable Objects proxy
 - **`headfwd-sidecar/`** - Go sidecar that runs with Headscale
+- **`docs/REGISTRATION.md`** - **Secure registration architecture (Challenge-Response auth)**
 - **`tailscale-ios-integration-plan.md`** - iOS app integration guide
 
 ## Quick Start
 
-### 1. Deploy Proxy (Cloudflare)
+### 1. Deploy Proxy
+
+**Option A: Fly.io (recommended for TS2021)**
+
+```bash
+cd headfwd-proxy-fly
+fly launch --no-deploy
+fly secrets set PUBLIC_HOST=headfwd.net
+fly deploy
+```
+
+**Option B: Cloudflare Workers (HTTP-only)**
 
 ```bash
 cd headfwd-proxy
@@ -52,24 +64,44 @@ npx wrangler kv namespace create REGISTRY
 npm run deploy
 ```
 
+> **Note:** Tailscale TS2021 uses a custom HTTP Upgrade that Cloudflare Workers cannot proxy. Use Fly.io for full control-plane support.
+
 ### 2. Run Headscale + Sidecar
 
+**Option A: Auto-Registration (Recommended)**
 ```bash
 cd headfwd
-docker compose up -d
+docker compose up -d headscale
 
-# Register with proxy
-curl -X POST https://headfwd.net/api/register \
-  -H "Content-Type: application/json" \
-  -d '{"pubkey": "YOUR_HEADSCALE_PUBKEY"}'
-
-# Returns: { "tunnelUrl": "wss://abc123.headfwd.net/tunnel?auth=secret", ... }
-
-# Start sidecar
+# Start sidecar with auto-registration
 cd headfwd-sidecar
 go build
+./headfwd-sidecar \
+  --register \
+  --proxy "https://headfwd.net" \
+  --headscale "http://localhost:8080" \
+  --noise-key "/var/lib/headscale/noise_private.key"
+```
+
+**Option B: Manual Registration**
+```bash
+# Get Headscale's public key
+PUBKEY=$(curl -s "http://localhost:8080/key?v=96" | jq -r .publicKey)
+
+# Phase 1: Get challenge
+RESPONSE=$(curl -s -X POST https://headfwd.net/api/register/init \
+  -H "Content-Type: application/json" \
+  -d "{\"publicKey\": \"$PUBKEY\"}")
+
+# Phase 2: Sign and verify (requires Noise private key access)
+# See docs/REGISTRATION.md for details
+
+# Phase 3: Start sidecar with tunnel URL
 ./headfwd-sidecar --tunnel "wss://abc123.headfwd.net/tunnel?auth=secret"
 ```
+
+> **Security Note**: The challenge-response protocol prevents unauthorized subdomain registration.  
+> See [`docs/REGISTRATION.md`](docs/REGISTRATION.md) for architecture details.
 
 ### 3. Update Headscale Config
 
@@ -90,10 +122,15 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 
 ## Security
 
-- Zero-knowledge proxy (sees only encrypted traffic)
-- Headscale validates all keys
-- End-to-end WireGuard encryption
-- Sidecar authenticates with secret
+- **Challenge-Response Authentication** - Cryptographic proof of Headscale ownership
+- **128-bit Fingerprints** - Collision-resistant subdomain identifiers (hex32)
+- **Zero-Knowledge Proxy** - Sees only encrypted WireGuard traffic
+- **Ed25519 Signatures** - Noise private key signs registration challenges
+- **Time-Limited Challenges** - 5-minute nonce expiration prevents replay attacks
+- **No Subdomain Enumeration** - Can't guess valid tunnels without private key
+- **Never Trust the Proxy** - Fingerprints must be derived locally from Headscale's Noise public key and proxy-provided URLs must be verified against local derivation
+
+For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATION.md).
 
 ## vs Alternatives
 
@@ -104,9 +141,18 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 | ngrok             | ✅  | Easy    | $8/mo each       |
 | Cloudflare Tunnel | ✅  | Medium  | Free (locked in) |
 
+## Documentation
+
+- **[Registration Architecture](docs/REGISTRATION.md)** - Secure challenge-response protocol
+- **[Quick Start Guide](QUICKSTART.md)** - Step-by-step setup instructions
+- **[iOS Integration](tailscale-ios-integration-plan.md)** - iOS app development guide
+
 ## Next Steps
 
-See `tailscale-ios-integration-plan.md` for iOS app development.
+1. Deploy proxy to Cloudflare Workers
+2. Register your Headscale instance with challenge-response auth
+3. Connect clients to your secure tunnel
+4. Build iOS app for mobile access
 
 ## References
 

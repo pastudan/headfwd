@@ -12,7 +12,7 @@ services:
     volumes:
       - ./headscale/config:/etc/headscale
       - ./headscale/data:/var/lib/headscale
-    command: headscale serve
+    command: serve
     environment:
       - TZ=UTC
 
@@ -22,11 +22,27 @@ services:
     container_name: headfwd-sidecar
     restart: unless-stopped
     environment:
-      # Set these after registering with proxy
-      - TUNNEL_URL=${TUNNEL_URL:-}
-      - HEADSCALE_URL=http://headscale:8080
+      AUTO_REGISTER: ${AUTO_REGISTER:-true}
+      RESTART_HEADSCALE: ${RESTART_HEADSCALE:-false}
+      HEADSCALE_CONTAINER_NAME: ${HEADSCALE_CONTAINER_NAME:-headscale}
+    volumes:
+      # Mount Headscale data directory for access to Noise private key
+      - ./headscale/data:/keys:ro
+      - ./headscale/config:/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - headscale
-    # Comment out until you have TUNNEL_URL
-    profiles:
-      - with-tunnel
+
+  headplane:
+    image: ghcr.io/tale/headplane:latest
+    container_name: headplane
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./headplane/config/config.yaml:/etc/headplane/config.yaml
+      - ./headplane/data:/var/lib/headplane
+      - ./headscale/config/config.yaml:/etc/headscale/config.yaml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - headscale
