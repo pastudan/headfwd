@@ -44,6 +44,14 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
 
             }
             .navigationTitle("HeadFwd")
+            .onChange(of: tailscale.connectionState) { _, newState in
+                if newState.isConnected {
+                    Task { await fetchHello() }
+                } else {
+                    helloResponse = nil
+                    helloError = nil
+                }
+            }
             .sheet(isPresented: $showScanner) {
                 QRScannerSheet { payload in
                     showScanner = false
