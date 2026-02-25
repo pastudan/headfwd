@@ -23,6 +23,9 @@ vendor: $(LIBTAILSCALE_DIR)/.git
 $(LIBTAILSCALE_DIR)/.git:
 	@echo "→ Cloning tailscale/libtailscale..."
 	git clone --depth=1 $(LIBTAILSCALE_REPO) $(LIBTAILSCALE_DIR)
+	@echo "→ Applying HeadFwd key-pinning patch..."
+	cd $(LIBTAILSCALE_DIR) && git apply $(CURDIR)/patches/libtailscale-pinned-key.patch
+	@echo "✓ Patch applied"
 
 ## ── Frameworks ───────────────────────────────────────────────────────────────
 

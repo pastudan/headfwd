@@ -1,0 +1,171 @@
+From: HeadFwd <security@headfwd.net>
+Subject: [PATCH] Add pinned-server-key interceptor to TsnetUp
+
+Closes the preauth-key theft attack described in docs/ios-key-verification.md.
+
+## How this works (the "C → Go interceptor")
+
+libtailscale is compiled as a Go c-archive (GOARCH=arm64, -buildmode=c-archive).
+Every exported Go function annotated with //export becomes a C symbol in the
+resulting .a file. Swift calls these C symbols via TailscaleKit's Objective-C
+bridge layer — so the call stack is:
+
+    Swift  →  TailscaleKit (ObjC)  →  C symbol TsnetUp  →  Go func TsnetUp
+
+The interceptor itself is pure Go. There is no C code in it. "C" here just
+refers to the ABI boundary between Swift/ObjC and the Go runtime.
+
+Once inside Go's TsnetUp, we can use the full Go stdlib — including net/http,
+net/http/httputil, and net/url — before calling s.s.Up(). Here is what happens:
+
+1. We check for `<stateDir>/pinned_server_key` written by ServerKeyVerifier.swift.
+   If absent (e.g. v:1 QR codes without verification), we skip and fall through
+   to normal tsnet behaviour.
+
+2. If the file exists, we call startKeyInterceptor(realControlURL, pinnedKey):
+   a. net.Listen("tcp", "127.0.0.1:0") binds a random free loopback port.
+   b. httputil.NewSingleHostReverseProxy(target) creates a standard Go reverse
+      proxy pointing at the real Headscale control URL.
+   c. An http.ServeMux routes:
+        GET /key?v=...  →  return {"publicKey": "<pinnedKey>"} from disk
+        everything else →  reverse-proxy to real Headscale
+   d. http.Server.Serve(ln) runs in a goroutine. It exits when cleanup() is
+      called (deferred after s.s.Up() returns).
+
+3. s.s.ControlURL is rewritten to "http://127.0.0.1:<port>".
+
+4. s.s.Up(ctx) runs. tsnet.Server connects to 127.0.0.1:<port> for all
+   control-plane traffic:
+   - Its internal /key fetch hits our mux → gets the pinned key from disk.
+   - The Noise_IK handshake uses that key. The proxy never gets to respond.
+   - TS2021 registration, keepalives, etc. are transparently proxied.
+
+5. defer cleanup() shuts down the local server once Up() returns.
+
+The loopback server adds negligible latency (sub-millisecond) and is only
+alive for the duration of tsnet's connection setup.
+---
+ tailscale.go                    | 17 +++++++-
+ tailscale_key_interceptor.go    | 72 +++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 1 deletion(-)
+ create mode 100644 tailscale_key_interceptor.go
+
+diff --git a/tailscale.go b/tailscale.go
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -112,9 +112,25 @@ func TsnetStart(sd C.int) C.int {
+ //export TsnetUp
+ func TsnetUp(sd C.int) C.int {
+ 	s := getServer(sd)
+ 	if s == nil {
+ 		return C.EBADF
+ 	}
++	// If the Swift verification layer has written a pinned server key to the
++	// state directory, start a local HTTP interceptor that serves it for
++	// /key requests and proxies everything else to the real control server.
++	// This prevents tsnet from fetching the key from the untrusted proxy,
++	// closing the preauth-key theft attack.
++	// See docs/ios-key-verification.md for the full threat model.
++	if s.s.Dir != "" {
++		if pinnedKey, err := readPinnedServerKey(s.s.Dir); err == nil {
++			if localURL, cleanup, err := startKeyInterceptor(s.s.ControlURL, pinnedKey); err == nil {
++				defer cleanup()
++				s.s.ControlURL = localURL
++			}
++		}
++	}
+ 	_, err := s.s.Up(context.Background()) // cancellation is via TsnetClose
+ 	return s.recErr(err)
+ }
+diff --git a/tailscale_key_interceptor.go b/tailscale_key_interceptor.go
+new file mode 100644
+--- /dev/null
++++ b/tailscale_key_interceptor.go
+@@ -0,0 +1,72 @@
++// Copyright (c) HeadFwd Authors
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Key-pinning interceptor for TsnetUp.
++//
++// When ServerKeyVerifier.swift has written a verified Noise public key to
++// <stateDir>/pinned_server_key, this file provides the two helpers used by
++// TsnetUp to ensure tsnet uses that key — not whatever the (potentially rogue)
++// proxy would return from /key?v=96.
++
++package main
++
++import (
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/httputil"
++	"net/url"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// readPinnedServerKey reads the Noise public key previously verified and
++// written by ServerKeyVerifier.swift from <dir>/pinned_server_key.
++//
++// Returns an error if the file does not exist (no verification has run yet,
++// e.g. a v:1 QR payload) or if the contents are malformed. The caller should
++// fall through to normal tsnet behaviour on error — this is defence-in-depth,
++// not a hard gate.
++func readPinnedServerKey(dir string) (string, error) {
++	data, err := os.ReadFile(filepath.Join(dir, "pinned_server_key"))
++	if err != nil {
++		return "", err
++	}
++	key := strings.TrimSpace(string(data))
++	if !strings.HasPrefix(key, "mkey:") {
++		return "", fmt.Errorf("pinned_server_key: expected mkey: prefix")
++	}
++	return key, nil
++}
++
++// startKeyInterceptor binds a random loopback TCP port and starts an HTTP
++// server with two routes:
++//
++//   - GET /key (any query string): returns {"publicKey": "<pinnedKey>"} directly
++//     from disk — the proxy is never consulted.
++//
++//   - everything else: reverse-proxied to realControlURL unchanged, so all
++//     TS2021 registration, keepalive, and map-update traffic reaches the real
++//     Headscale instance transparently.
++//
++// It returns the local base URL ("http://127.0.0.1:<port>") to use as
++// tsnet.Server.ControlURL, and a cleanup func that shuts the server down.
++// The cleanup is deferred in TsnetUp so the server lives exactly as long as
++// tsnet's Up() call.
++func startKeyInterceptor(realControlURL, pinnedKey string) (localURL string, cleanup func(), err error) {
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		return "", nil, fmt.Errorf("key interceptor: listen: %w", err)
++	}
++
++	target, err := url.Parse(realControlURL)
++	if err != nil {
++		ln.Close()
++		return "", nil, fmt.Errorf("key interceptor: parse control URL: %w", err)
++	}
++
++	rp := httputil.NewSingleHostReverseProxy(target)
++	orig := rp.Director
++	rp.Director = func(req *http.Request) {
++		orig(req)
++		req.Host = target.Host // preserve Host header so Headscale routing works
++	}
++
++	mux := http.NewServeMux()
++	mux.HandleFunc("/key", func(w http.ResponseWriter, _ *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		fmt.Fprintf(w, `{"publicKey":%q}`, pinnedKey) //nolint:errcheck
++	})
++	mux.Handle("/", rp)
++
++	srv := &http.Server{Handler: mux}
++	go srv.Serve(ln) //nolint:errcheck
++
++	return "http://" + ln.Addr().String(), func() { srv.Close() }, nil
++}

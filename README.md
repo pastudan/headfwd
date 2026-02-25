@@ -42,6 +42,22 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 - **`docs/ios-poc-plan.md`** - iOS app PoC plan (SwiftUI + XcodeGen CLI build)
 - **`tailscale-ios-integration-plan.md`** - iOS app integration guide (tailscaled compilation)
 
+## Security
+
+HeadFwd is designed on the principle that **the proxy is untrusted**. All security-critical values are derived and verified locally; the proxy is treated as a dumb (and potentially rogue) relay.
+
+### Sidecar ↔ Proxy Registration
+
+Before a sidecar is granted a tunnel, it must prove possession of Headscale's Noise private key via an X25519 ECDH + HMAC-SHA256 challenge-response. The proxy cannot impersonate a legitimate sidecar, and a sidecar cannot register without the private key.
+
+See **[`docs/REGISTRATION.md`](docs/REGISTRATION.md)** for the full protocol.
+
+### iOS Key Verification & Pinning
+
+Before the iOS app hands control to tsnet, it independently verifies that the Headscale Noise public key served by the control URL hashes to the fingerprint embedded in the QR code's server URL. A patched libtailscale then reads the verified key from disk so tsnet never fetches it from the proxy — closing a preauth-key theft attack that would otherwise be viable against a rogue proxy.
+
+See **[`docs/ios-key-verification.md`](docs/ios-key-verification.md)** for the full threat model, attack chain, and implementation details.
+
 ## Quick Start
 
 ### 1. Deploy Proxy

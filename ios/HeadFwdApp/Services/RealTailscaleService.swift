@@ -91,10 +91,24 @@ final class RealTailscaleService: TailscaleServiceProtocol {
         // with a clear message so the user knows to scan a new QR code.
         let dirContents = (try? FileManager.default.contentsOfDirectory(atPath: tsDir)) ?? []
         if config.key == nil, dirContents.isEmpty {
-            connectionState = .disconnected
+            connectionState = .error("No stored credentials — scan a QR code to connect")
             throw NSError(domain: "HeadFwd", code: 1,
                 userInfo: [NSLocalizedDescriptionKey:
                     "No stored credentials — scan a QR code to connect"])
+        }
+
+        // Verify the server's Noise key matches the fingerprint in the QR URL and
+        // pin it to disk. The libtailscale patch reads this file in TsnetUp and
+        // serves it via a local interceptor, so tsnet never fetches the key from
+        // the untrusted proxy — closing the preauth-key theft attack.
+        // See docs/ios-key-verification.md for the full threat model.
+        do {
+            try await ServerKeyVerifier.verify(config: config, stateDir: tsDir)
+        } catch {
+            if case .connecting = connectionState {
+                connectionState = .error(error.localizedDescription)
+            }
+            throw error
         }
 
         let tsConfig = Configuration(
@@ -108,21 +122,35 @@ final class RealTailscaleService: TailscaleServiceProtocol {
         let newNode = try TailscaleNode(config: tsConfig, logger: nil)
         self.node = newNode
 
-        // Wrap up() with a 30-second timeout. An expired or already-used
-        // preauth key makes tsnet wait for interactive login indefinitely;
-        // this surfaces a readable error instead of a permanent spinner.
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await newNode.up() }
-            group.addTask {
-                // nanoseconds variant for broadest iOS compatibility
-                try await Task.sleep(nanoseconds: 30_000_000_000)
-                throw NSError(domain: "HeadFwd", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey:
-                        "Connection timed out — try regenerating the QR code in the portal"])
+        // Wrap up() with a 10-second timeout. An expired/revoked preauth key
+        // or a node removed from Headscale makes tsnet wait for interactive
+        // login indefinitely; this surfaces a readable error instead of a
+        // permanent spinner.
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await newNode.up() }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                    throw NSError(domain: "HeadFwd", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Connection timed out — credentials may be revoked. Try scanning a new QR code."])
+                }
+                try await group.next()!
+                group.cancelAll()
             }
-            try await group.next()!
-            group.cancelAll()
+        } catch let connectError {
+            // Only update state if we're still connecting — a concurrent
+            // disconnect()/clearState() call may have already moved us to
+            // .disconnected, in which case we leave it alone.
+            if case .connecting = connectionState {
+                connectionState = .error(connectError.localizedDescription)
+            }
+            throw connectError
         }
+
+        // If disconnect() ran concurrently while up() was in flight (e.g., the
+        // user tapped Cancel or Reset), honour that decision and bail out now.
+        guard case .connecting = connectionState else { return }
 
         // Preauth key is single-use — clear it from storage now that the
         // node is registered. tsnet will reconnect using its stored keypair.
@@ -138,13 +166,14 @@ final class RealTailscaleService: TailscaleServiceProtocol {
     }
 
     func disconnect() async {
-        if let node {
-            try? await node.close()
-        }
+        // Capture and nil out immediately so the UI updates at once and any
+        // concurrent connect() sees the state change before close() returns.
+        let nodeToClose = self.node
         self.node = nil
         tailscaleIP = nil
         tailscaleHostname = nil
         connectionState = .disconnected
+        try? await nodeToClose?.close()
     }
 
     func clearState() async {
