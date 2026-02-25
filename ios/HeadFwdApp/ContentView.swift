@@ -322,10 +322,17 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
     private func openPortal() async {
         // Pre-create the tsnet URLSession so the scheme handler has it ready
         // before WKWebView starts loading. Reuse an existing session if present.
+        // makeURLSession() can throw URLError.badURL when the SOCKS proxy isn't
+        // ready yet; try? falls back to nil so the sheet simply won't show.
         if portalSession == nil {
             portalSession = try? await tailscale.makeURLSession()
         }
-        showPortal = true
+        // Only open if we have a valid session and tailnet address.
+        if portalSession != nil {
+            showPortal = true
+        } else {
+            helloError = "Tailnet session not ready — wait a moment and try again"
+        }
     }
 
     private func fetchHello() async {
@@ -334,10 +341,15 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
         helloError = nil
         do {
             // Prefer the tailnet address so the server sees the device's real 100.64 IP.
-            // Falls back to the public URL (which shows the internet IP) if not on tailnet.
-            let (session, serverURL): (URLSession, String)
-            if let tailnetAddr = cfg.tailnetServer, tailscale.connectionState.isConnected {
-                session = try await tailscale.makeURLSession()
+            // Falls back to the public URL (internet IP) if not on tailnet or if the
+            // SOCKS proxy session setup fails (TailscaleKit throws URLError.badURL when
+            // the loopback proxy isn't ready yet).
+            let session: URLSession
+            let serverURL: String
+            if let tailnetAddr = cfg.tailnetServer,
+               tailscale.connectionState.isConnected,
+               let tailnetSession = try? await tailscale.makeURLSession() {
+                session = tailnetSession
                 serverURL = tailnetAddr
             } else {
                 session = URLSession.shared
