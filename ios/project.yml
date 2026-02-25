@@ -1,0 +1,60 @@
+name: HeadFwdApp
+options:
+  bundleIdPrefix: net.headfwd
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.2"
+  generateEmptyDirectories: true
+
+schemes:
+  HeadFwdApp:
+    build:
+      targets:
+        HeadFwdApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: "YOUR_APPLE_TEAM_ID"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Apple Development"
+
+targets:
+  HeadFwdApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: HeadFwdApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.headfwd.app
+    info:
+      path: HeadFwdApp/Info.plist
+      properties:
+        CFBundleDisplayName: HeadFwd
+        NSCameraUsageDescription: "Scan QR codes to connect devices to your tailnet"
+        UILaunchScreen: {}
+        # ATS exception for tailnet portal connections.
+        #
+        # The portal is accessed at http://100.64.x.x:3001 (RFC 6598 CG-NAT space)
+        # via tsnet's userspace WireGuard SOCKS5 proxy. All traffic is encrypted by
+        # WireGuard at the transport layer — ATS's goal (preventing plaintext data
+        # in transit) is already satisfied. 100.64.x.x is never reachable from the
+        # public internet; it is only routable within the authenticated tailnet.
+        #
+        # NSAllowsLocalNetworking covers RFC 1918 (10/8, 172.16/12, 192.168/16) but
+        # NOT RFC 6598 (100.64/10), so a broader exception is required here.
+        #
+        # Production path: enable HTTPS on the tsnet listener (tsnet.Server.ListenTLS)
+        # so Apple sees https:// and no exception is needed.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    dependencies:
+      - framework: Frameworks/TailscaleKit.xcframework
+        embed: true

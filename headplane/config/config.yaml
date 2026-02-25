@@ -1,0 +1,20 @@
+server:
+  host: 0.0.0.0
+  port: 3000
+  cookie_secure: false
+  cookie_secret: "replace-with-a-strong-secret-123"
+
+headscale:
+  url: https://a1b2c3d4e5f60718293a4b5c6d7e8f90.headfwd.net
+  config_path: /etc/headscale/config.yaml
+  config_strict: false
+  # Add a Headscale API key in the UI or set one here if you prefer.
+
+auth:
+  cookie_secret: "change-me-to-a-random-32-char-secret"
+  cookie_secure: false
+
+integration:
+  docker:
+    enabled: true
+    headscale_container_name: headscale

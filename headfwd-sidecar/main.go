@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -12,31 +13,35 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"context"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/headfwd/sidecar/portal"
+	"github.com/headfwd/sidecar/portal/headscale"
+	"tailscale.com/tsnet"
 )
 
 // Configuration
 var (
-	tunnelURL      = flag.String("tunnel", "", "Tunnel WebSocket URL (wss://abc123.headfwd.net/tunnel?auth=secret)")
-	headscaleURL   = flag.String("headscale", "http://headscale:8080", "Local Headscale URL")
-	proxyURL       = flag.String("proxy", "https://headfwd.net", "Proxy URL for registration")
-	noiseKeyPath   = flag.String("noise-key", "", "Path to Noise private key (default: auto-detect from Headscale)")
-	autoRegister   = flag.Bool("register", true, "Auto-register with proxy using challenge-response")
-	configPath     = flag.String("config", "/config/config.yaml", "Headscale config path for server_url updates")
-	updateConfig   = flag.Bool("update-config", true, "Update headscale server_url when auto-registering")
-	forceUpdate    = flag.Bool("force-update", false, "Force update headscale server_url even if already set")
-	restartHeadscale = flag.Bool("restart-headscale", false, "Restart headscale container after updating server_url")
+	tunnelURL          = flag.String("tunnel", "", "Tunnel WebSocket URL (wss://abc123.headfwd.net/tunnel?auth=secret)")
+	headscaleURL       = flag.String("headscale", "http://headscale:8080", "Local Headscale URL")
+	proxyURL           = flag.String("proxy", "https://headfwd.net", "Proxy URL for registration")
+	noiseKeyPath       = flag.String("noise-key", "", "Path to Noise private key (default: auto-detect from Headscale)")
+	autoRegister       = flag.Bool("register", true, "Auto-register with proxy using challenge-response")
+	configPath         = flag.String("config", "/config/config.yaml", "Headscale config path for server_url updates")
+	updateConfig       = flag.Bool("update-config", true, "Update headscale server_url when auto-registering")
+	forceUpdate        = flag.Bool("force-update", false, "Force update headscale server_url even if already set")
+	restartHeadscale   = flag.Bool("restart-headscale", false, "Restart headscale container after updating server_url")
 	headscaleContainer = flag.String("headscale-container", "headscale", "Docker container name for headscale")
-	reconnectDelay = flag.Duration("reconnect", 5*time.Second, "Reconnect delay")
+	reconnectDelay     = flag.Duration("reconnect", 5*time.Second, "Reconnect delay")
 )
 
 // TunnelMessage matches proxy protocol
@@ -171,37 +176,129 @@ func main() {
 	log.Printf("HeadFwd Sidecar starting...")
 	log.Printf("Headscale: %s", *headscaleURL)
 
-	// Auto-register if requested
+	devMode := os.Getenv("DEV") == "1"
+
+	// Collect portal config; portal is started after registration so it has the public URL.
+	var portalAPIKey string
+	if portalEnabled() {
+		portalAPIKey = os.Getenv("HEADSCALE_API_KEY")
+		if portalAPIKey == "" {
+			if key, err := bootstrapAPIKey(*headscaleContainer); err != nil {
+				log.Printf("Portal: API key bootstrap failed: %v", err)
+				log.Printf("Portal: user/key management will not work (set HEADSCALE_API_KEY manually)")
+			} else {
+				portalAPIKey = key
+			}
+		}
+	}
+
+	// Auto-register if requested (must happen before portal start to obtain public URL)
+	var portalPublicURL string
 	if *autoRegister {
 		log.Printf("Auto-registering with proxy...")
 		result, err := registerWithProxy(*proxyURL, *headscaleURL, *noiseKeyPath)
 		if err != nil {
-			log.Fatalf("Registration failed: %v", err)
-		}
-		tunnelURL = &result.TunnelURL
-		log.Printf("✓ Registration successful")
+			if devMode {
+				log.Printf("Registration failed (non-fatal in dev mode): %v", err)
+			} else {
+				log.Fatalf("Registration failed: %v", err)
+			}
+		} else {
+			tunnelURL = &result.TunnelURL
+			portalPublicURL = publicURLFromFingerprint(result.Fingerprint)
+			log.Printf("✓ Registration successful")
 
-		if *updateConfig {
-			publicURL := publicURLFromFingerprint(result.Fingerprint)
-			if updated, err := updateServerURL(*configPath, publicURL, *forceUpdate); err != nil {
-				log.Printf("Config update skipped: %v", err)
-			} else if updated {
-				log.Printf("✓ Updated headscale server_url in %s", *configPath)
-				if *restartHeadscale {
-					if err := restartHeadscaleContainer(*headscaleContainer); err != nil {
-						log.Printf("Failed to restart headscale: %v", err)
-						log.Printf("Please restart headscale for the change to take effect.")
+			if *updateConfig {
+				if updated, err := updateServerURL(*configPath, portalPublicURL, *forceUpdate); err != nil {
+					log.Printf("Config update skipped: %v", err)
+				} else if updated {
+					log.Printf("✓ Updated headscale server_url in %s", *configPath)
+					if *restartHeadscale {
+						if err := restartHeadscaleContainer(*headscaleContainer); err != nil {
+							log.Printf("Failed to restart headscale: %v", err)
+							log.Printf("Please restart headscale for the change to take effect.")
+						} else {
+							log.Printf("✓ Restarted headscale container: %s", *headscaleContainer)
+						}
 					} else {
-						log.Printf("✓ Restarted headscale container: %s", *headscaleContainer)
+						log.Printf("Please restart headscale for the change to take effect.")
 					}
-				} else {
-					log.Printf("Please restart headscale for the change to take effect.")
 				}
 			}
 		}
 	}
 
+	// Fall back to PUBLIC_URL env var (useful in dev or when not auto-registering)
+	if portalPublicURL == "" {
+		portalPublicURL = os.Getenv("PUBLIC_URL")
+	}
+
+	// tailnetServerAddr holds the sidecar's tailnet portal URL once tsnet connects.
+	// It is set from a background goroutine and read at QR-code-generation time.
+	var tailnetServerAddr atomic.Pointer[string]
+	tailnetServerFunc := func() string {
+		if v := tailnetServerAddr.Load(); v != nil {
+			return *v
+		}
+		return ""
+	}
+
+	// Start portal web UI immediately so it is available while tsnet is connecting.
+	if portalEnabled() {
+		go func() {
+			err := portal.ListenAndServe(portal.Config{
+				Port:              envOr("PORTAL_PORT", "3001"),
+				HeadscaleURL:      *headscaleURL,
+				APIKey:            portalAPIKey,
+				DevMode:           devMode,
+				PublicURL:         portalPublicURL,
+				TailnetServerFunc: tailnetServerFunc,
+			})
+			if err != nil {
+				log.Printf("Portal error: %v", err)
+			}
+		}()
+	}
+
+	// Join the headscale network as "headfwd-server" in the background.
+	// Once connected, tailnetServerAddr is updated and new QR codes will include
+	// the tailnet portal URL. The portal also starts listening on the tsnet interface.
+	if portalEnabled() && portalAPIKey != "" {
+		tsnetDir := envOr("TSNET_DIR", defaultTsnetDir())
+		hsClient := headscale.NewClient(*headscaleURL, portalAPIKey)
+		go func() {
+			ip, tsLn, err := startTsnetNode(hsClient, *headscaleURL, tsnetDir)
+			if err != nil {
+				log.Printf("Warning: tsnet self-registration failed: %v", err)
+				log.Printf("Warning: iOS /api/hello will not show tailnet IP until this is resolved")
+				return
+			}
+			addr := "http://" + ip + ":3001"
+			tailnetServerAddr.Store(&addr)
+			log.Printf("✓ Tailnet portal ready: %s", addr)
+			// Serve portal on the tsnet listener so peers reach us at our 100.64 IP.
+			// In dev mode the embedded frontend isn't built, so proxy static requests
+			// to the local Vite server instead so the iOS WebView shows the live UI.
+			viteProxy := ""
+			if devMode {
+				viteProxy = "http://localhost:5173"
+			}
+			portal.ServeOn(portal.Config{
+				HeadscaleURL:      *headscaleURL,
+				APIKey:            portalAPIKey,
+				DevMode:           devMode,
+				ViteProxyURL:      viteProxy,
+				PublicURL:         portalPublicURL,
+				TailnetServerFunc: tailnetServerFunc,
+			}, tsLn)
+		}()
+	}
+
 	if *tunnelURL == "" {
+		if devMode {
+			log.Printf("No tunnel URL -- running portal only (dev mode)")
+			select {} // block forever, portal runs in goroutine
+		}
 		log.Fatal("--tunnel is required (or use --register for auto-registration)")
 	}
 
@@ -233,7 +330,10 @@ func runTunnel() error {
 		defer ticker.Stop()
 		for range ticker.C {
 			msg := TunnelMessage{Type: "ping"}
-			if err := conn.WriteJSON(msg); err != nil {
+			wsMu.Lock()
+			err := conn.WriteJSON(msg)
+			wsMu.Unlock()
+			if err != nil {
 				return
 			}
 		}
@@ -370,7 +470,10 @@ func handleRequest(conn *websocket.Conn, data json.RawMessage) {
 		Data: mustMarshal(resp),
 	}
 
-	if err := conn.WriteJSON(msg); err != nil {
+	wsMu.Lock()
+	err = conn.WriteJSON(msg)
+	wsMu.Unlock()
+	if err != nil {
 		log.Printf("Error writing response: %v", err)
 	}
 }
@@ -387,8 +490,11 @@ func (s *streamConn) write(data []byte) error {
 	return err
 }
 
-var streamMu = &sync.Mutex{}
+var streamMu  = &sync.Mutex{}
 var streamConns = map[string]*streamConn{}
+// wsMu serializes all writes to the tunnel websocket connection.
+// gorilla/websocket requires that only one writer is active at a time.
+var wsMu = &sync.Mutex{}
 
 func handleWsOpen(conn *websocket.Conn, data json.RawMessage) {
 	var open WsOpen
@@ -508,7 +614,10 @@ func sendWsData(conn *websocket.Conn, id, data string, isBinary bool) {
 			IsBinary: isBinary,
 		}),
 	}
-	if err := conn.WriteJSON(msg); err != nil {
+	wsMu.Lock()
+	err := conn.WriteJSON(msg)
+	wsMu.Unlock()
+	if err != nil {
 		log.Printf("Error writing ws_data: %v", err)
 	}
 }
@@ -522,17 +631,18 @@ func sendWsClose(conn *websocket.Conn, id string, code int, reason string) {
 			Reason: reason,
 		}),
 	}
-	if err := conn.WriteJSON(msg); err != nil {
+	wsMu.Lock()
+	err := conn.WriteJSON(msg)
+	wsMu.Unlock()
+	if err != nil {
 		log.Printf("Error writing ws_close: %v", err)
 	}
 }
 
 func forwardToHeadscale(req TunnelRequest) (*TunnelResponse, error) {
-	// Build HTTP request to local Headscale
 	// Extract path from full URL
 	reqURL := req.URL
 	if len(reqURL) > 0 && reqURL[0] != '/' {
-		// Parse full URL to get path
 		u, err := url.Parse(reqURL)
 		if err == nil {
 			reqURL = u.Path
@@ -541,6 +651,10 @@ func forwardToHeadscale(req TunnelRequest) (*TunnelResponse, error) {
 			}
 		}
 	}
+
+	// All tunnel traffic goes to Headscale. The portal is NOT reachable via the
+	// public proxy — it is only accessible on the local tailnet (100.64.x.x).
+	targetBase := *headscaleURL
 	
 	var body io.Reader
 	if req.Body != nil {
@@ -562,7 +676,7 @@ func forwardToHeadscale(req TunnelRequest) (*TunnelResponse, error) {
 		}
 	}
 
-	httpReq, err := http.NewRequest(req.Method, *headscaleURL+reqURL, body)
+	httpReq, err := http.NewRequest(req.Method, targetBase+reqURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -699,18 +813,26 @@ func buildRawRequest(method, requestURL string, headers map[string]string, body 
 	return buf.Bytes()
 }
 
-func restartHeadscaleContainer(container string) error {
+func dockerClient() (*http.Client, error) {
 	socketPath := "/var/run/docker.sock"
 	if _, err := os.Stat(socketPath); err != nil {
-		return fmt.Errorf("docker socket not available: %w", err)
+		return nil, fmt.Errorf("docker socket not available: %w", err)
 	}
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return net.Dial("unix", socketPath)
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
 		},
+		Timeout: 30 * time.Second,
+	}, nil
+}
+
+func restartHeadscaleContainer(container string) error {
+	client, err := dockerClient()
+	if err != nil {
+		return err
 	}
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 
 	req, err := http.NewRequest(http.MethodPost, "http://docker/containers/"+container+"/restart", nil)
 	if err != nil {
@@ -729,6 +851,114 @@ func restartHeadscaleContainer(container string) error {
 	return nil
 }
 
+// dockerExec runs a command inside a container via the Docker API and returns stdout.
+func dockerExec(container string, cmd []string) (string, error) {
+	client, err := dockerClient()
+	if err != nil {
+		return "", err
+	}
+
+	// Step 1: Create exec instance
+	createBody, _ := json.Marshal(map[string]interface{}{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Cmd":          cmd,
+	})
+	createReq, _ := http.NewRequest(http.MethodPost,
+		"http://docker/containers/"+container+"/exec",
+		bytes.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		return "", fmt.Errorf("exec create: %w", err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != 201 {
+		body, _ := io.ReadAll(createResp.Body)
+		return "", fmt.Errorf("exec create failed (%d): %s", createResp.StatusCode, string(body))
+	}
+
+	var execCreate struct {
+		Id string `json:"Id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&execCreate); err != nil {
+		return "", fmt.Errorf("exec create decode: %w", err)
+	}
+
+	// Step 2: Start exec and capture output
+	startBody, _ := json.Marshal(map[string]interface{}{"Detach": false, "Tty": false})
+	startReq, _ := http.NewRequest(http.MethodPost,
+		"http://docker/exec/"+execCreate.Id+"/start",
+		bytes.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+
+	startResp, err := client.Do(startReq)
+	if err != nil {
+		return "", fmt.Errorf("exec start: %w", err)
+	}
+	defer startResp.Body.Close()
+
+	if startResp.StatusCode != 200 {
+		body, _ := io.ReadAll(startResp.Body)
+		return "", fmt.Errorf("exec start failed (%d): %s", startResp.StatusCode, string(body))
+	}
+
+	// Docker multiplexed stream: 8-byte header per frame [type(1) padding(3) size(4)] + payload
+	var output strings.Builder
+	header := make([]byte, 8)
+	for {
+		_, err := io.ReadFull(startResp.Body, header)
+		if err != nil {
+			break
+		}
+		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
+		if size <= 0 {
+			continue
+		}
+		frame := make([]byte, size)
+		if _, err := io.ReadFull(startResp.Body, frame); err != nil {
+			break
+		}
+		// header[0]: 1=stdout, 2=stderr; only capture stdout
+		if header[0] == 1 {
+			output.Write(frame)
+		}
+	}
+
+	// Step 3: Check exit code
+	inspectReq, _ := http.NewRequest(http.MethodGet, "http://docker/exec/"+execCreate.Id+"/json", nil)
+	inspectResp, err := client.Do(inspectReq)
+	if err == nil {
+		defer inspectResp.Body.Close()
+		var inspect struct {
+			ExitCode int `json:"ExitCode"`
+		}
+		if json.NewDecoder(inspectResp.Body).Decode(&inspect) == nil && inspect.ExitCode != 0 {
+			return "", fmt.Errorf("command exited with code %d", inspect.ExitCode)
+		}
+	}
+
+	return strings.TrimSpace(output.String()), nil
+}
+
+// bootstrapAPIKey creates a Headscale API key via docker exec if none is configured.
+func bootstrapAPIKey(container string) (string, error) {
+	log.Printf("Bootstrapping Headscale API key via docker exec...")
+	key, err := dockerExec(container, []string{
+		"headscale", "apikeys", "create", "--expiration", "8760h",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create API key: %w", err)
+	}
+	if key == "" {
+		return "", fmt.Errorf("headscale returned empty API key")
+	}
+	log.Printf("✓ API key bootstrapped")
+	return key, nil
+}
+
 func stringPtr(s string) *string { return &s }
 func stringReader(s string) io.Reader {
 	return bytes.NewBufferString(s)
@@ -736,6 +966,18 @@ func stringReader(s string) io.Reader {
 func mustMarshal(v interface{}) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func portalEnabled() bool {
+	v := os.Getenv("PORTAL_ENABLED")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // registerWithProxy performs X25519 ECDH + HMAC-SHA256 challenge-response registration
@@ -867,6 +1109,7 @@ func loadNoisePrivateKey(keyPath string) ([]byte, error) {
 			"/var/lib/headscale/noise_private.key",
 			"/keys/noise_private.key",
 			"./headscale/data/noise_private.key",
+			"../headscale/data/noise_private.key", // running from headfwd-sidecar/ in dev
 		}
 		for _, p := range paths {
 			if _, err := os.Stat(p); err == nil {
@@ -901,4 +1144,123 @@ func loadNoisePrivateKey(keyPath string) ([]byte, error) {
 	}
 
 	return privateKey, nil
+}
+
+// ── Tsnet self-registration ────────────────────────────────────────────────
+
+// defaultTsnetDir returns a writable directory for tsnet's WireGuard state.
+// Prefers /var/lib/headfwd-ts (Docker / production), falls back to the OS
+// user cache dir (~/.cache/headfwd-ts on Linux, ~/Library/Caches/headfwd-ts
+// on macOS) so `make dev` works without root.
+func defaultTsnetDir() string {
+	if err := os.MkdirAll("/var/lib/headfwd-ts", 0700); err == nil {
+		return "/var/lib/headfwd-ts"
+	}
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cacheDir, "headfwd-ts")
+	}
+	return filepath.Join(os.TempDir(), "headfwd-ts")
+}
+
+// startTsnetNode joins the local headscale network as "headfwd-server" using tsnet
+// (userspace WireGuard — no kernel TUN device or CAP_NET_ADMIN required).
+// It returns the node's tailnet IPv4 address and a net.Listener on port 3001 of
+// that tailnet interface. Portal traffic arriving on that listener has a genuine
+// 100.64.x.x remote address for the connecting peer.
+func startTsnetNode(hsClient *headscale.Client, headscaleURL, stateDir string) (ip4 string, ln net.Listener, err error) {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return "", nil, fmt.Errorf("create tsnet state dir: %w", err)
+	}
+
+	// Only create a new preauth key on first start (no existing state file).
+	stateFile := filepath.Join(stateDir, "tailscaled.state")
+	var authKey string
+	if _, statErr := os.Stat(stateFile); os.IsNotExist(statErr) {
+		authKey, err = provisionServerNode(hsClient)
+		if err != nil {
+			return "", nil, fmt.Errorf("provision server node: %w", err)
+		}
+	}
+
+	srv := &tsnet.Server{
+		Hostname:   "headfwd-server",
+		AuthKey:    authKey,
+		ControlURL: headscaleURL,
+		Dir:        stateDir,
+		Ephemeral:  false,
+		// Suppress tsnet's chatty internal logs.
+		Logf: func(format string, args ...any) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if _, err = srv.Up(ctx); err != nil {
+		srv.Close()
+		return "", nil, fmt.Errorf("tsnet up: %w", err)
+	}
+
+	lc, err := srv.LocalClient()
+	if err != nil {
+		srv.Close()
+		return "", nil, fmt.Errorf("tsnet local client: %w", err)
+	}
+
+	status, err := lc.Status(ctx)
+	if err != nil {
+		srv.Close()
+		return "", nil, fmt.Errorf("tsnet status: %w", err)
+	}
+
+	for _, ip := range status.TailscaleIPs {
+		if ip.Is4() {
+			ip4 = ip.String()
+			break
+		}
+	}
+	if ip4 == "" {
+		srv.Close()
+		return "", nil, fmt.Errorf("tsnet: no IPv4 tailnet address assigned")
+	}
+
+	ln, err = srv.Listen("tcp", ":3001")
+	if err != nil {
+		srv.Close()
+		return "", nil, fmt.Errorf("tsnet listen :3001: %w", err)
+	}
+
+	log.Printf("✓ Joined tailnet as headfwd-server (%s)", ip4)
+	return ip4, ln, nil
+}
+
+// provisionServerNode ensures the "headfwd-server" headscale user exists and
+// creates a single-use preauth key for it (used only on the first tsnet start).
+func provisionServerNode(hsClient *headscale.Client) (string, error) {
+	const serverUser = "headfwd-server"
+
+	user, err := hsClient.GetUserByName(serverUser)
+	if err != nil {
+		user, err = hsClient.CreateUser(serverUser)
+		if err != nil {
+			return "", fmt.Errorf("create headscale user %q: %w", serverUser, err)
+		}
+		log.Printf("Created headscale user: %s", serverUser)
+	}
+
+	userID, err := user.NumericID()
+	if err != nil {
+		return "", fmt.Errorf("invalid user ID for %q: %w", serverUser, err)
+	}
+
+	expiration := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+	key, err := hsClient.CreatePreauthKey(headscale.CreateKeyRequest{
+		User:       userID,
+		Reusable:   false,
+		Ephemeral:  false,
+		Expiration: expiration,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create server preauth key: %w", err)
+	}
+	return key.Key, nil
 }

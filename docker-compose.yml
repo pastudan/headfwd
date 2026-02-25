@@ -16,33 +16,42 @@ services:
     environment:
       - TZ=UTC
 
-  # HeadFwd sidecar - establishes reverse tunnel
+  # HeadFwd sidecar - reverse tunnel + optional admin portal
   headfwd-sidecar:
     build: ./headfwd-sidecar
     container_name: headfwd-sidecar
     restart: unless-stopped
+    ports:
+      - "3001:3001" # Portal web UI (when PORTAL_ENABLED=true)
     environment:
       AUTO_REGISTER: ${AUTO_REGISTER:-true}
       RESTART_HEADSCALE: ${RESTART_HEADSCALE:-false}
       HEADSCALE_CONTAINER_NAME: ${HEADSCALE_CONTAINER_NAME:-headscale}
+      PORTAL_ENABLED: ${PORTAL_ENABLED:-true}
+      PORTAL_PORT: ${PORTAL_PORT:-3001}
+      # HEADSCALE_API_KEY is auto-bootstrapped via docker exec if not set
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
     volumes:
-      # Mount Headscale data directory for access to Noise private key
       - ./headscale/data:/keys:ro
       - ./headscale/config:/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - headfwd-tsnet:/var/lib/headfwd-ts  # persistent tsnet node keypair
     depends_on:
       - headscale
 
-  headplane:
-    image: ghcr.io/tale/headplane:latest
-    container_name: headplane
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./headplane/config/config.yaml:/etc/headplane/config.yaml
-      - ./headplane/data:/var/lib/headplane
-      - ./headscale/config/config.yaml:/etc/headscale/config.yaml
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - headscale
+  # headplane:
+  #   image: ghcr.io/tale/headplane:latest
+  #   container_name: headplane
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     - ./headplane/config/config.yaml:/etc/headplane/config.yaml
+  #     - ./headplane/data:/var/lib/headplane
+  #     - ./headscale/config/config.yaml:/etc/headscale/config.yaml
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   depends_on:
+  #     - headscale
+
+volumes:
+  headfwd-tsnet:  # persistent storage for tsnet WireGuard keypair

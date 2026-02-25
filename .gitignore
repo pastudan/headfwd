@@ -1,5 +1,8 @@
 # Headscale data
 headscale/data/
+
+# pnpm store (local cache, not part of repo)
+.pnpm-store/
 headscale/config/private.key
 headscale/config/noise_private.key
 

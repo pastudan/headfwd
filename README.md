@@ -37,9 +37,10 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 ## Components
 
 - **`headfwd-proxy/`** - Cloudflare Workers + Durable Objects proxy
-- **`headfwd-sidecar/`** - Go sidecar that runs with Headscale
-- **`docs/REGISTRATION.md`** - **Secure registration architecture (Challenge-Response auth)**
-- **`tailscale-ios-integration-plan.md`** - iOS app integration guide
+- **`headfwd-sidecar/`** - Go sidecar that runs with Headscale + optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
+- **`docs/REGISTRATION.md`** - Secure registration architecture (Challenge-Response auth)
+- **`docs/ios-poc-plan.md`** - iOS app PoC plan (SwiftUI + XcodeGen CLI build)
+- **`tailscale-ios-integration-plan.md`** - iOS app integration guide (tailscaled compilation)
 
 ## Quick Start
 
@@ -145,7 +146,9 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 
 - **[Registration Architecture](docs/REGISTRATION.md)** - Secure challenge-response protocol
 - **[Quick Start Guide](QUICKSTART.md)** - Step-by-step setup instructions
-- **[iOS Integration](tailscale-ios-integration-plan.md)** - iOS app development guide
+- **[Portal README](headfwd-sidecar/portal/README.md)** - Admin portal (built into sidecar), API docs, and development guide
+- **[iOS PoC Plan](docs/ios-poc-plan.md)** - iOS app proof-of-concept plan (CLI build with XcodeGen)
+- **[iOS Integration](tailscale-ios-integration-plan.md)** - iOS app integration guide (tailscaled compilation)
 
 ## Next Steps
 
