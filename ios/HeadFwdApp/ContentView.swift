@@ -277,7 +277,7 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
         let suffix = ".headfwd.net"
         if display.hasSuffix(suffix) {
             let sub = String(display.dropLast(suffix.count))
-            return "\(sub.prefix(6))…\(suffix)"
+            return "\(sub.prefix(3))…\(sub.suffix(3))\(suffix)"
         }
         return display
     }
