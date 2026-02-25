@@ -23,6 +23,10 @@ final class MockTailscaleService: TailscaleServiceProtocol {
         tailscaleHostname = nil
     }
 
+    func clearState() async {
+        await disconnect()
+    }
+
     func makeURLSession() async throws -> URLSession {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15

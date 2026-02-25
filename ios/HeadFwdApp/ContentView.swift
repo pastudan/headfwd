@@ -216,11 +216,12 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 .confirmationDialog("Reset Configuration?", isPresented: $showResetConfirm, titleVisibility: .visible) {
                     Button("Reset", role: .destructive) {
                         Task {
-                            await tailscale.disconnect()
+                            await tailscale.clearState()
                             HeadscaleConfig.clear()
                             config = nil
                             helloResponse = nil
                             helloError = nil
+                            portalSession = nil
                         }
                     }
                 } message: {

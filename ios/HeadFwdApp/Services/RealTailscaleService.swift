@@ -59,6 +59,16 @@ final class RealTailscaleService: TailscaleServiceProtocol {
         connectionState = .disconnected
     }
 
+    func clearState() async {
+        await disconnect()
+        // Remove the persisted tsnet WireGuard state so the next connect()
+        // uses the new preauth key and registers a fresh node with a new IP,
+        // rather than silently re-using the old stored keypair.
+        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let tsDir = docsDir.appendingPathComponent("tailscale")
+        try? FileManager.default.removeItem(at: tsDir)
+    }
+
     /// Returns a URLSession proxied through the tsnet SOCKS5 loopback.
     /// Use this to reach services at tailnet IPs (100.64.x.x).
     /// For public URLs use URLSession.shared directly.
