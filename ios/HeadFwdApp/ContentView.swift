@@ -74,7 +74,7 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
             }
             .padding(.vertical, 1)
 
-            if let name = tailscale.tailscaleHostname {
+            if let name = helloResponse?.nodeName ?? tailscale.tailscaleHostname {
                 copyableRow("Device", name, mono: true)
             }
             if let ip = tailscale.tailscaleIP {
@@ -205,7 +205,13 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 }
             } else {
                 Button {
-                    showScanner = true
+                    Task {
+                        await tailscale.clearState()
+                        helloResponse = nil
+                        helloError = nil
+                        portalSession = nil
+                        showScanner = true
+                    }
                 } label: {
                     Label("Scan New QR Code", systemImage: "qrcode.viewfinder")
                 }

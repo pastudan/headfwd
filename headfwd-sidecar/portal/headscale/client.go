@@ -164,7 +164,24 @@ func (c *Client) CreateUser(name string) (*User, error) {
 }
 
 func (c *Client) DeleteUser(name string) error {
-	_, err := c.do("DELETE", "/api/v1/user/"+name, nil)
+	user, err := c.GetUserByName(name)
+	if err != nil {
+		return err
+	}
+
+	nodes, err := c.ListNodes()
+	if err != nil {
+		return fmt.Errorf("list nodes before delete: %w", err)
+	}
+	for _, node := range nodes {
+		if node.User.Name == name {
+			if _, err := c.do("DELETE", "/api/v1/node/"+node.ID, nil); err != nil {
+				return fmt.Errorf("delete node %s: %w", node.ID, err)
+			}
+		}
+	}
+
+	_, err = c.do("DELETE", "/api/v1/user/"+user.ID, nil)
 	return err
 }
 

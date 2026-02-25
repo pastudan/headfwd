@@ -200,7 +200,11 @@ function UserRow({
           <div className={`flex items-center gap-2 transition-opacity ${confirmDelete ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
             {confirmDelete ? (
               <>
-                <span className="text-xs text-red-500">Delete user?</span>
+                <span className="text-xs text-red-500">
+                  {nodes.length > 0
+                    ? `Delete user + ${nodes.length} device${nodes.length !== 1 ? "s" : ""}?`
+                    : "Delete user?"}
+                </span>
                 <button
                   onClick={handleDelete}
                   disabled={deleting}
