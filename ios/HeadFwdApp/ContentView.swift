@@ -264,10 +264,9 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
     // MARK: - Helpers
 
     /// Formats a server URL for compact display.
-    /// Strips the scheme (https://) and truncates a long fingerprint subdomain,
-    /// keeping the TLD suffix visible: `9126…736e.headfwd.net`
-    private func truncateMiddle(_ s: String, keep: Int = 12) -> String {
-        // Strip scheme
+    /// For headfwd.net fingerprint URLs: `91268f….headfwd.net`
+    /// For anything else: strip scheme and show as-is (short enough in practice).
+    private func truncateMiddle(_ s: String) -> String {
         var display = s
         for scheme in ["https://", "http://"] {
             if display.hasPrefix(scheme) {
@@ -275,14 +274,12 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 break
             }
         }
-        // Short enough? Show as-is.
-        guard display.count > keep * 2 + 1 else { return display }
-        // Keep `keep` chars from start + 12 chars of domain suffix + `keep`-12 fingerprint chars
-        // e.g. for .headfwd.net (12 chars) keep suffix=16 to show "736e.headfwd.net"
-        let suffixLen = max(keep, 16)
-        let prefixLen = keep
-        guard display.count > prefixLen + suffixLen + 1 else { return display }
-        return "\(display.prefix(prefixLen))…\(display.suffix(suffixLen))"
+        let suffix = ".headfwd.net"
+        if display.hasSuffix(suffix) {
+            let sub = String(display.dropLast(suffix.count))
+            return "\(sub.prefix(6))…\(suffix)"
+        }
+        return display
     }
 
     // MARK: - Status color
