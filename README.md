@@ -14,33 +14,39 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 ## Architecture
 
 ```
-┌─────────────────┐         Persistent WebSocket            ┌──────────────────┐
-│   Headscale     │════════════════════════════════════════>│  Cloudflare      │
-│   (at home,     │  1. Tunnel opens on startup             │  Durable Object  │
-│    behind NAT)  │                                         │                  │
-└─────────────────┘                                         └──────────────────┘
-                                                                     ▲
-                                                        2. Client    │
-                                                           requests  │
-                                                                     ▼
-                                                            ┌─────────────────┐
-                                                            │  Client (iOS)   │
-                                                            │  HTTP requests  │
-                                                            └─────────────────┘
+┌─────────────────┐        Persistent WebSocket tunnel        ┌──────────────────┐
+│   Headscale     │══════════════════════════════════════════>│   HeadFwd Proxy  │
+│   + sidecar     │  1. Sidecar dials out on startup          │  (Fly.io or CF)  │
+│  (behind NAT)   │     wss://<fp>.headfwd.net/tunnel         │                  │
+└─────────────────┘                                           └──────────────────┘
+                                                                       ▲
+                                                          2. Client    │ HTTPS /
+                                                             requests  │ TS2021 upgrade
+                                                                       ▼
+                                                              ┌─────────────────┐
+                                                              │  Client (iOS)   │
+                                                              │  tsnet / WebUI  │
+                                                              └─────────────────┘
 ```
 
-1. Headscale sidecar opens persistent WebSocket to proxy
-2. Clients make HTTP requests to `https://<fingerprint>.headfwd.net`
-3. Proxy forwards through tunnel to Headscale
-4. WireGuard mesh established, then direct P2P
+1. The Headscale sidecar dials out and opens a persistent WebSocket tunnel to the proxy (no inbound ports needed)
+2. Clients make requests to `https://<fingerprint>.headfwd.net`
+3. The proxy forwards HTTP requests — and hijacks Tailscale's TS2021 HTTP `Upgrade` — back through the tunnel to Headscale
+4. WireGuard mesh is established, then traffic goes direct P2P where possible
+
+The proxy is a stateless relay identified only by the fingerprint subdomain; it never sees your keys or plaintext. Two interchangeable backends are provided:
+
+- **Fly.io** (`headfwd-proxy-fly/`, Go) — **recommended**; supports Tailscale's custom TS2021 HTTP `Upgrade`, so it can carry the full control plane.
+- **Cloudflare Workers** (`headfwd-proxy/`, TypeScript + Durable Objects) — HTTP-only; convenient and cheap, but cannot proxy the TS2021 upgrade.
 
 ## Components
 
-- **`headfwd-proxy/`** - Cloudflare Workers + Durable Objects proxy
-- **`headfwd-sidecar/`** - Go sidecar that runs with Headscale + optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
-- **`docs/REGISTRATION.md`** - Secure registration architecture (Challenge-Response auth)
-- **`docs/ios-poc-plan.md`** - iOS app PoC plan (SwiftUI + XcodeGen CLI build)
-- **`tailscale-ios-integration-plan.md`** - iOS app integration guide (tailscaled compilation)
+- **`headfwd-proxy-fly/`** - Go proxy for Fly.io (recommended; full TS2021 control-plane support)
+- **`headfwd-proxy/`** - Cloudflare Workers + Durable Objects proxy (HTTP-only alternative)
+- **`headfwd-sidecar/`** - Go sidecar that runs with Headscale: opens the tunnel, auto-registers, and serves an optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
+- **`ios/`** - SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
+- **`docs/REGISTRATION.md`** - Sidecar↔proxy registration protocol (X25519 ECDH + HMAC-SHA256 challenge-response)
+- **`docs/ios-key-verification.md`** - iOS key verification & pinning (preauth-key theft protection)
 
 ## Security
 
@@ -110,7 +116,8 @@ RESPONSE=$(curl -s -X POST https://headfwd.net/api/register/init \
   -H "Content-Type: application/json" \
   -d "{\"publicKey\": \"$PUBKEY\"}")
 
-# Phase 2: Sign and verify (requires Noise private key access)
+# Phase 2: Compute HMAC proof from the X25519 ECDH shared secret
+#          (sidecar Noise private key × proxy ephemeral public key) and verify.
 # See docs/REGISTRATION.md for details
 
 # Phase 3: Start sidecar with tunnel URL
@@ -133,16 +140,17 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 
 ## Cost
 
-- **Free tier:** 100+ Headscale instances
-- **At scale:** $0.10/user/month (1000 users)
-- Hibernating WebSockets = only charged when active
+- **Fly.io:** a single shared-cpu-1x instance comfortably runs the proxy; fits within the free/low-cost tier for personal use
+- **Cloudflare Workers:** free tier covers 100+ Headscale instances; hibernating WebSockets mean you're only billed when a tunnel is active
+- Either way, the proxy only relays encrypted traffic — no per-GB data egress for the control plane
 
 ## Security
 
 - **Challenge-Response Authentication** - Cryptographic proof of Headscale ownership
 - **128-bit Fingerprints** - Collision-resistant subdomain identifiers (hex32)
-- **Zero-Knowledge Proxy** - Sees only encrypted WireGuard traffic
-- **Ed25519 Signatures** - Noise private key signs registration challenges
+- **Zero-Knowledge Proxy** - Sees only encrypted WireGuard/Noise traffic
+- **X25519 ECDH + HMAC-SHA256** - The sidecar proves possession of Headscale's Noise private key via an ECDH shared secret with the proxy's ephemeral key; no new key material is introduced
+- **iOS Key Pinning** - The app verifies the Noise key against the QR fingerprint and pins it so tsnet never trusts a proxy-supplied key
 - **Time-Limited Challenges** - 5-minute nonce expiration prevents replay attacks
 - **No Subdomain Enumeration** - Can't guess valid tunnels without private key
 - **Never Trust the Proxy** - Fingerprints must be derived locally from Headscale's Noise public key and proxy-provided URLs must be verified against local derivation
@@ -160,22 +168,23 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 
 ## Documentation
 
-- **[Registration Architecture](docs/REGISTRATION.md)** - Secure challenge-response protocol
+- **[Registration Architecture](docs/REGISTRATION.md)** - Sidecar↔proxy challenge-response protocol (X25519 ECDH + HMAC-SHA256)
+- **[iOS Key Verification](docs/ios-key-verification.md)** - Noise-key verification, pinning, and the preauth-key theft threat model
 - **[Quick Start Guide](QUICKSTART.md)** - Step-by-step setup instructions
 - **[Portal README](headfwd-sidecar/portal/README.md)** - Admin portal (built into sidecar), API docs, and development guide
-- **[iOS PoC Plan](docs/ios-poc-plan.md)** - iOS app proof-of-concept plan (CLI build with XcodeGen)
-- **[iOS Integration](tailscale-ios-integration-plan.md)** - iOS app integration guide (tailscaled compilation)
+- **[iOS App](ios/README.md)** - SwiftUI app build (XcodeGen + patched `libtailscale`)
 
 ## Next Steps
 
-1. Deploy proxy to Cloudflare Workers
-2. Register your Headscale instance with challenge-response auth
-3. Connect clients to your secure tunnel
-4. Build iOS app for mobile access
+1. Deploy the proxy (Fly.io recommended, Cloudflare Workers for HTTP-only)
+2. Run Headscale + sidecar; the sidecar auto-registers with challenge-response auth
+3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net`
+4. Connect the iOS app (or any Tailscale client) via QR onboarding
 
 ## References
 
 - [Headscale](https://headscale.net/)
 - [Tailscale](https://tailscale.com/)
+- [Fly.io](https://fly.io/)
 - [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/)
 - Inspired by [headfwd-agent](https://github.com/headfwd/headfwd-agent)

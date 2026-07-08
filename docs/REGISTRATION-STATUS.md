@@ -5,127 +5,56 @@
 1. **Hex32 Fingerprints** - 128-bit collision-resistant subdomain identifiers
 2. **Two-Phase Registration** - `/api/register/init` and `/api/register/verify` endpoints
 3. **Challenge-Response Protocol** - Nonce generation and expiration (5 minutes)
-4. **In-Memory Storage** - Local dev support without KV namespace
+4. **Cryptographic Proof of Ownership** - X25519 ECDH + HMAC-SHA256 (see below)
 5. **Sidecar Auto-Registration** - `--register` flag with automatic key detection
-6. **Documentation** - Comprehensive architecture docs in `docs/REGISTRATION.md`
-7. **README Updates** - Security section and registration flow documented
+6. **Two Proxy Backends** - Fly.io (Go, in-memory, TS2021-capable) and Cloudflare Workers (TypeScript + KV, HTTP-only)
+7. **Documentation** - `docs/REGISTRATION.md` (protocol) and `docs/ios-key-verification.md` (client-side pinning)
 
-## ⚠️ Known Limitation: Signature Verification
+## ✅ Resolved: Proof of Ownership Without a Signing Key
 
-### Issue
-The Noise protocol key used by Headscale is a **Curve25519** key (for ECDH key exchange), not an **Ed25519** key (for signing). While these curves are related, Curve25519 keys cannot directly sign messages.
+### The original problem
+Headscale's Noise key is a **Curve25519 (X25519)** key intended for ECDH key
+exchange, **not** an Ed25519 signing key. An earlier design tried to have the
+sidecar *sign* the challenge nonce, which is impossible with an X25519 key
+without either a separate Ed25519 key or a Curve25519→Ed25519 conversion.
 
-### Current Behavior
-- Registration init works ✅
-- Challenge nonce generation works ✅
-- Signature verification fails ❌ (Curve25519 vs Ed25519 mismatch)
+### The solution (implemented)
+Instead of signing, registration uses **X25519 ECDH + HMAC-SHA256**, which uses
+the existing Noise key directly and introduces **no new key material**:
 
-### Solutions
+1. On `init`, the proxy generates a per-challenge **ephemeral X25519 keypair**
+   and returns its public key (`proxyPublicKey`) alongside the nonce.
+2. The sidecar computes `sharedSecret = X25519(noisePrivateKey, proxyPublicKey)`
+   and returns `proof = HMAC-SHA256(sharedSecret, nonce)`.
+3. On `verify`, the proxy computes the same secret as
+   `X25519(ephemeralPrivateKey, sidecarPublicKey)` and checks the HMAC in
+   constant time.
 
-#### Option 1: Use Legacy Registration (Temporary)
-For now, use the legacy `/api/register` endpoint which doesn't require signature verification:
+Because ECDH is symmetric, only the holder of Headscale's Noise **private** key
+can produce a matching proof — giving cryptographic proof of ownership without a
+signing key, key conversion, or any Headscale modifications.
 
-```bash
-PUBKEY=$(curl -s "http://localhost:8080/key?v=96" | jq -r .publicKey)
-curl -X POST http://localhost:8787/api/register \
-  -H "Content-Type: application/json" \
-  -d "{\"pubkey\": \"$PUBKEY\"}" | jq .
-```
+This is implemented in both `headfwd-sidecar/main.go` and both proxy backends
+(`headfwd-proxy-fly/main.go`, `headfwd-proxy/src/index.ts`). There is no longer a
+"legacy" unauthenticated registration endpoint.
 
-#### Option 2: Generate Separate Signing Key (Recommended for Production)
-Create a dedicated Ed25519 keypair for HeadFwd registration:
+## Storage
 
-```bash
-# Generate Ed25519 keypair
-openssl genpkey -algorithm ED25519 -out headfwd_private.key
-openssl pkey -in headfwd_private.key -pubout -out headfwd_public.key
+- **Fly.io backend**: in-memory maps in a single proxy process. If the proxy
+  restarts, the sidecar re-registers automatically.
+- **Cloudflare Workers backend**: `REGISTRY` KV — `challenge:{fingerprint}`
+  (5-minute TTL) and `tunnel:{fingerprint}` (1-year TTL).
 
-# Use this for registration instead of Noise key
-```
+## Security Properties
 
-#### Option 3: Implement Curve25519-to-Ed25519 Conversion
-There's a mathematical relationship between Curve25519 and Ed25519 keys that allows conversion. This requires:
-- Implementing the conversion algorithm in both Go (sidecar) and TypeScript (proxy)
-- Using libraries like `@noble/curves` or `golang.org/x/crypto/curve25519`
+- ✅ Unique, collision-resistant 128-bit fingerprints
+- ✅ Cryptographic proof of Headscale ownership (ECDH + HMAC)
+- ✅ Single-use, time-limited (5 min) challenge nonces
+- ✅ No subdomain enumeration without the private key
+- ✅ No new secrets to manage — the Noise key is reused
+- 🔲 Rate limiting on registration endpoints (future hardening)
 
-### Recommended Path Forward
+## See Also
 
-**For MVP/Testing:**
-- Use legacy `/api/register` endpoint (no signature verification)
-- Still provides unique fingerprints and tunnel secrets
-- Good enough for private deployments
-
-**For Production:**
-- Implement Option 2 (separate Ed25519 keypair)
-- Store HeadFwd signing key alongside Noise key
-- Update sidecar to use HeadFwd key for registration
-- Keeps Noise key unchanged (no Headscale modifications needed)
-
-### Code Changes Needed for Option 2
-
-**1. Generate HeadFwd Keypair During Setup:**
-```bash
-# In headscale/data/ directory
-openssl genpkey -algorithm ED25519 -out headfwd_signing.key
-openssl pkey -in headfwd_signing.key -pubout -out headfwd_signing.pub
-```
-
-**2. Update Sidecar to Use HeadFwd Key:**
-```go
-// Instead of reading Noise key, read HeadFwd signing key
-keyPath := "/var/lib/headscale/headfwd_signing.key"
-```
-
-**3. Update Registration Init:**
-```bash
-# Send HeadFwd public key instead of Noise public key
-PUBKEY=$(cat /var/lib/headscale/headfwd_signing.pub | base64)
-curl -X POST /api/register/init -d "{\"publicKey\": \"$PUBKEY\"}"
-```
-
-## Testing Status
-
-### ✅ Working
-- Proxy health endpoint
-- Fingerprint computation (hex32)
-- Challenge generation and storage
-- Sidecar auto-registration flow
-- In-memory storage for local dev
-
-### ❌ Not Working
-- Ed25519 signature verification (key type mismatch)
-
-### 🔄 Workaround
-- Use legacy `/api/register` endpoint
-- Works for testing and private deployments
-- Provides unique fingerprints without signature verification
-
-## Next Steps
-
-1. **Short Term**: Document legacy registration as the recommended approach
-2. **Medium Term**: Implement Option 2 (separate Ed25519 keypair)
-3. **Long Term**: Consider if signature verification is necessary for the threat model
-
-## Security Implications
-
-**Without Signature Verification:**
-- ✅ Still have unique, collision-resistant fingerprints
-- ✅ Still have tunnel secrets for authentication
-- ✅ Still prevent subdomain enumeration (128-bit fingerprints)
-- ❌ Anyone with the public key can register (but they need it first)
-- ❌ No cryptographic proof of Headscale ownership
-
-**Risk Assessment:**
-- **Low Risk** for private deployments (you control who knows the public key)
-- **Medium Risk** for public proxy (anyone can register if they have a Headscale)
-- **Mitigation**: Rate limiting + monitoring on registration endpoints
-
-## Conclusion
-
-The challenge-response architecture is sound, but requires either:
-1. A separate Ed25519 signing key (clean solution)
-2. Curve25519-to-Ed25519 conversion (complex but elegant)
-3. Accept legacy registration without signature verification (pragmatic for now)
-
-For the current stage of development, **Option 3 (legacy registration) is recommended** to unblock testing while we decide on the long-term approach.
-
+- `docs/REGISTRATION.md` — full protocol description
+- `docs/ios-key-verification.md` — client-side Noise-key verification and pinning

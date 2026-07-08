@@ -42,60 +42,47 @@ npm run deploy
 
 ## 2. Start Headscale + Sidecar (5 minutes)
 
+The sidecar auto-registers with the proxy (X25519 ECDH + HMAC-SHA256), derives your
+`<fingerprint>.headfwd.net` subdomain from Headscale's Noise key, opens the tunnel,
+and can update Headscale's `server_url` for you.
+
 ```bash
 cd ..
 
-# Start Headscale
-docker compose up -d headscale
+# Start Headscale + sidecar (sidecar has --register / AUTO_REGISTER=true by default)
+docker compose up -d
 
-# Create user
+# Create a user
 docker compose exec headscale headscale users create default
 
-# Register with proxy
-curl -X POST https://headfwd.net/api/register \
-  -H "Content-Type: application/json" \
-  -d '{"pubkey": "test-key-'$(date +%s)'"}'
-
-# Save the response:
-# {
-#   "fingerprint": "abc123...xyz",
-#   "tunnelUrl": "wss://abc123.headfwd.net/tunnel?auth=SECRET",
-#   "publicUrl": "https://abc123.headfwd.net"
-# }
-
-# Update headscale config
-# Edit headscale/config/config.yaml:
-# server_url: https://abc123.headfwd.net
-
-# Restart Headscale
-docker compose restart headscale
-
-# Start sidecar
-export TUNNEL_URL="wss://abc123.headfwd.net/tunnel?auth=SECRET"
-docker compose --profile with-tunnel up -d headfwd-sidecar
-
-# Check logs
+# Watch the sidecar register and connect
 docker compose logs -f headfwd-sidecar
-# Should see: "✓ Tunnel connected"
+# Should show your fingerprint, "server_url" update, and "Tunnel connected"
 ```
 
-## 3. Connect Client (2 minutes)
+To run the sidecar outside Docker instead:
 
 ```bash
-cd ../tailscale
+cd headfwd-sidecar
+go build
+./headfwd-sidecar \
+  --register \
+  --proxy "https://headfwd.net" \
+  --headscale "http://localhost:8080" \
+  --noise-key "/var/lib/headscale/noise_private.key"
+```
 
-# Build tailscale
-go build ./cmd/tailscale
-go build ./cmd/tailscaled
+## 3. Connect a Client (2 minutes)
 
-# Start daemon
-sudo ./tailscaled --tun=userspace-networking --state=/tmp/ts/state
+**iOS app (primary):** build and run `ios/` (see `ios/README.md`), then scan the QR
+code the portal generates. The app verifies the Noise key against the fingerprint,
+pins it, and connects via tsnet.
 
-# Connect (in another terminal)
-./tailscale --socket=/tmp/ts/tailscaled.sock up \
-  --login-server=https://abc123.headfwd.net
+**Any Tailscale client:** point it at your tunnel URL as the login server.
 
-# Follow the auth URL or use pre-auth key
+```bash
+tailscale up --login-server=https://abc123.headfwd.net
+# Follow the auth URL, or use a pre-auth key from the portal
 ```
 
 ## Verify
@@ -144,6 +131,7 @@ docker compose logs headscale
 
 ## Next Steps
 
-- **iOS App:** See `tailscale-ios-integration-plan.md`
+- **iOS App:** See `ios/README.md`
+- **Security model:** See `docs/REGISTRATION.md` and `docs/ios-key-verification.md`
 - **Production:** Use proper secrets, monitoring
 - **Multiple Nodes:** Connect more devices to your mesh
