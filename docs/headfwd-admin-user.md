@@ -60,7 +60,7 @@ Admin middleware logic:
    Admin API endpoints (GET/PUT/DELETE /api/admins)
    Frontend useCurrentUser hook + access gate
    Admin badge on UserRow + grant/revoke toggle
-   Does this match your intent? A few decisions I'd like your call on before building:
-   Non-admin portal view: "Access restricted" page (simplest) or a degraded read-only view?
-   Admin toggle visibility: always visible shield icon, or also on-hover like delete?
-   System user in UI: hide headfwd-server from the users list entirely, or show it with a "system" badge and prevent deletion?
+   Decisions (resolved):
+   Non-admin portal view: "Access restricted" page (simplest) — show their own identity but no management controls.
+   Admin toggle visibility: always visible shield icon badge on the user row — instant visual clarity on who has admin.
+   System user in UI: show headfwd-server with a "system" badge and prevent deletion (do not hide it).

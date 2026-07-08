@@ -243,6 +243,11 @@ func main() {
 		return ""
 	}
 
+	// Compute the state directory once — used by both portal instances and tsnet.
+	portalStateDir := envOr("TSNET_DIR", defaultTsnetDir())
+
+	upstreamURL := os.Getenv("UPSTREAM_URL")
+
 	// Start portal web UI immediately so it is available while tsnet is connecting.
 	if portalEnabled() {
 		go func() {
@@ -253,6 +258,8 @@ func main() {
 				DevMode:           devMode,
 				PublicURL:         portalPublicURL,
 				TailnetServerFunc: tailnetServerFunc,
+				StateDir:          portalStateDir,
+				UpstreamURL:       upstreamURL,
 			})
 			if err != nil {
 				log.Printf("Portal error: %v", err)
@@ -264,18 +271,17 @@ func main() {
 	// Once connected, tailnetServerAddr is updated and new QR codes will include
 	// the tailnet portal URL. The portal also starts listening on the tsnet interface.
 	if portalEnabled() && portalAPIKey != "" {
-		tsnetDir := envOr("TSNET_DIR", defaultTsnetDir())
 		hsClient := headscale.NewClient(*headscaleURL, portalAPIKey)
 		go func() {
-			ip, tsLn, err := startTsnetNode(hsClient, *headscaleURL, tsnetDir)
+			ip, tsLn, err := startTsnetNode(hsClient, *headscaleURL, portalStateDir)
 			if err != nil {
 				log.Printf("Warning: tsnet self-registration failed: %v", err)
 				log.Printf("Warning: iOS /api/hello will not show tailnet IP until this is resolved")
 				return
 			}
-			addr := "http://" + ip + ":3001"
-			tailnetServerAddr.Store(&addr)
-			log.Printf("✓ Tailnet portal ready: %s", addr)
+		addr := "http://" + ip + ":3001"
+		tailnetServerAddr.Store(&addr)
+		log.Printf("✓ Tailnet portal ready: %s", addr)
 			// Serve portal on the tsnet listener so peers reach us at our 100.64 IP.
 			// In dev mode the embedded frontend isn't built, so proxy static requests
 			// to the local Vite server instead so the iOS WebView shows the live UI.
@@ -290,6 +296,8 @@ func main() {
 				ViteProxyURL:      viteProxy,
 				PublicURL:         portalPublicURL,
 				TailnetServerFunc: tailnetServerFunc,
+				StateDir:          portalStateDir,
+				UpstreamURL:       upstreamURL,
 			}, tsLn)
 		}()
 	}

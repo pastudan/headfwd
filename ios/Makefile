@@ -25,7 +25,9 @@ $(LIBTAILSCALE_DIR)/.git:
 	git clone --depth=1 $(LIBTAILSCALE_REPO) $(LIBTAILSCALE_DIR)
 	@echo "→ Applying HeadFwd key-pinning patch..."
 	cd $(LIBTAILSCALE_DIR) && git apply $(CURDIR)/patches/libtailscale-pinned-key.patch
-	@echo "✓ Patch applied"
+	@echo "→ Applying HeadFwd portal-proxy patch..."
+	cd $(LIBTAILSCALE_DIR) && git apply $(CURDIR)/patches/libtailscale-portal-proxy.patch
+	@echo "✓ Patches applied"
 
 ## ── Frameworks ───────────────────────────────────────────────────────────────
 

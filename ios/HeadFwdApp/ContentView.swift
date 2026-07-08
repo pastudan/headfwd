@@ -3,6 +3,7 @@ import WebKit
 
 struct ContentView<T: TailscaleServiceProtocol>: View {
     @ObservedObject var tailscale: T
+    @Environment(\.scenePhase) private var scenePhase
     @State private var config: HeadscaleConfig? = HeadscaleConfig.load()
 
     @State private var showScanner = false
@@ -14,9 +15,10 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
     @State private var helloLoading = false
 
     @State private var showResetConfirm = false
+    @State private var connectTask: Task<Void, Never>?
 
     @State private var showPortal = false
-    @State private var portalSession: URLSession?
+    @State private var portalProxyURL: URL?
 
     private let network = NetworkService()
 
@@ -50,6 +52,20 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 } else {
                     helloResponse = nil
                     helloError = nil
+                    portalProxyURL = nil
+                }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                // Refresh after the app returns from background — tsnet may
+                // need a moment to re-establish the SOCKS proxy after sleep.
+                if newPhase == .active, tailscale.connectionState.isConnected {
+                    portalProxyURL = nil
+                    Task {
+                        // Brief grace period so tsnet can start reconnecting
+                        // before we fire the first request.
+                        try? await Task.sleep(for: .seconds(1.5))
+                        await fetchHello()
+                    }
                 }
             }
             .sheet(isPresented: $showScanner) {
@@ -59,10 +75,8 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 }
             }
             .sheet(isPresented: $showPortal) {
-                if let session = portalSession,
-                   let ts = config?.tailnetServer,
-                   let url = URL(string: ts) {
-                    PortalWebView(portalURL: url, session: session)
+                if let url = portalProxyURL {
+                    PortalWebView(proxyURL: url)
                 }
             }
         }
@@ -129,13 +143,14 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
         Section {
             Button("Connect to Tailnet") {
                 connectError = nil
-                Task {
+                connectTask = Task {
                     do {
                         try await tailscale.connect(config: config!)
                         config = HeadscaleConfig.load()
                     } catch {
                         connectError = error.localizedDescription
                     }
+                    connectTask = nil
                 }
             }
             .disabled(tailscale.connectionState == .connecting)
@@ -155,6 +170,11 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 Text("Registering with Headscale…")
                     .foregroundStyle(.secondary)
                     .font(.subheadline)
+            }
+            Button("Cancel", role: .destructive) {
+                connectTask?.cancel()
+                connectTask = nil
+                Task { await tailscale.disconnect() }
             }
         }
     }
@@ -188,7 +208,13 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
             .disabled(helloLoading || config == nil)
 
             if let helloError {
-                Text(helloError).foregroundStyle(.red).font(.caption)
+                HStack(alignment: .top, spacing: 8) {
+                    Text(helloError).foregroundStyle(.red).font(.caption)
+                    Spacer()
+                    Button("Retry") { Task { await fetchHello() } }
+                        .font(.caption.weight(.medium))
+                        .disabled(helloLoading)
+                }
             }
 
             if let r = helloResponse {
@@ -217,7 +243,7 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                         await tailscale.clearState()
                         helloResponse = nil
                         helloError = nil
-                        portalSession = nil
+                        portalProxyURL = nil
                         showScanner = true
                     }
                 } label: {
@@ -229,13 +255,15 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
                 }
                 .confirmationDialog("Reset Configuration?", isPresented: $showResetConfirm, titleVisibility: .visible) {
                     Button("Reset", role: .destructive) {
+                        connectTask?.cancel()
+                        connectTask = nil
                         Task {
                             await tailscale.clearState()
                             HeadscaleConfig.clear()
                             config = nil
                             helloResponse = nil
                             helloError = nil
-                            portalSession = nil
+                            portalProxyURL = nil
                         }
                     }
                 } message: {
@@ -320,58 +348,74 @@ struct ContentView<T: TailscaleServiceProtocol>: View {
 
         if autoConnect {
             connectError = nil
-            Task {
+            connectTask = Task {
                 do {
                     try await tailscale.connect(config: parsed)
                     config = HeadscaleConfig.load()
                 } catch {
                     connectError = error.localizedDescription
                 }
+                connectTask = nil
             }
         }
     }
 
     private func openPortal() async {
-        // Pre-create the tsnet URLSession so the scheme handler has it ready
-        // before WKWebView starts loading. Reuse an existing session if present.
-        // makeURLSession() can throw URLError.badURL when the SOCKS proxy isn't
-        // ready yet; try? falls back to nil so the sheet simply won't show.
-        if portalSession == nil {
-            portalSession = try? await tailscale.makeURLSession()
+        guard let tailnetAddr = config?.tailnetServer else {
+            helloError = "No tailnet address — wait for sidecar to join tailnet"
+            return
         }
-        // Only open if we have a valid session and tailnet address.
-        if portalSession != nil {
+        // Strip scheme: the proxy dialer expects bare host:port.
+        let target = tailnetAddr
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+        print("[HeadFwd] openPortal: starting proxy → \(target)")
+        do {
+            portalProxyURL = try await tailscale.startPortalProxy(targetAddr: target)
+            print("[HeadFwd] openPortal: proxy ready at \(portalProxyURL!)")
             showPortal = true
-        } else {
-            helloError = "Tailnet session not ready — wait a moment and try again"
+        } catch {
+            print("[HeadFwd] openPortal: failed to start proxy: \(error)")
+            helloError = "Could not start portal proxy: \(error.localizedDescription)"
         }
     }
 
     private func fetchHello() async {
         guard let cfg = config else { return }
+        guard let tailnetAddr = cfg.tailnetServer else {
+            print("[HeadFwd] fetchHello: tailnetServer not set in config (server=\(cfg.server))")
+            helloError = "No tailnet address — wait for sidecar to join tailnet"
+            return
+        }
+        print("[HeadFwd] fetchHello: target=\(tailnetAddr)/api/hello")
         helloLoading = true
         helloError = nil
-        do {
-            // Prefer the tailnet address so the server sees the device's real 100.64 IP.
-            // Falls back to the public URL (internet IP) if not on tailnet or if the
-            // SOCKS proxy session setup fails (TailscaleKit throws URLError.badURL when
-            // the loopback proxy isn't ready yet).
-            let session: URLSession
-            let serverURL: String
-            if let tailnetAddr = cfg.tailnetServer,
-               tailscale.connectionState.isConnected,
-               let tailnetSession = try? await tailscale.makeURLSession() {
-                session = tailnetSession
-                serverURL = tailnetAddr
-            } else {
-                session = URLSession.shared
-                serverURL = cfg.server
+        defer { helloLoading = false }
+
+        // Up to 3 attempts — tsnet can take several seconds to re-establish
+        // routing after the device wakes from sleep.
+        let delays: [Double] = [2, 4]
+        var lastError: Error?
+        for attempt in 1...3 {
+            print("[HeadFwd] fetchHello: attempt \(attempt)/3")
+            do {
+                guard let session = try? await tailscale.makeURLSession() else {
+                    print("[HeadFwd] fetchHello: makeURLSession() returned nil on attempt \(attempt)")
+                    throw URLError(.networkConnectionLost)
+                }
+                helloResponse = try await network.hello(session: session, serverURL: tailnetAddr)
+                print("[HeadFwd] fetchHello: success")
+                return
+            } catch {
+                print("[HeadFwd] fetchHello: attempt \(attempt) error: \(error)")
+                lastError = error
+                let delay = attempt <= delays.count ? delays[attempt - 1] : nil
+                if let delay, tailscale.connectionState.isConnected {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
             }
-            helloResponse = try await network.hello(session: session, serverURL: serverURL)
-        } catch {
-            helloError = error.localizedDescription
         }
-        helloLoading = false
+        helloError = "\(lastError?.localizedDescription ?? "Unknown error") [\(tailnetAddr)]"
     }
 }
 

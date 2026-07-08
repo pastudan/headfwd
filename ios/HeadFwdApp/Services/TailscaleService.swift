@@ -17,4 +17,12 @@ protocol TailscaleServiceProtocol: ObservableObject {
     /// Use this to reach services at 100.64.x.x addresses. Falls back to a plain
     /// session if not connected.
     func makeURLSession() async throws -> URLSession
+
+    /// Starts a local HTTP reverse proxy on 127.0.0.1 that forwards requests to
+    /// targetAddr (host:port) over the WireGuard tunnel, returning the base URL
+    /// http://127.0.0.1:PORT.
+    ///
+    /// Load this URL in WKWebView: it's a proper http:// origin (ATS-exempt, ES
+    /// modules work, WebSocket upgrades forwarded, same-origin for all /api calls).
+    func startPortalProxy(targetAddr: String) async throws -> URL
 }

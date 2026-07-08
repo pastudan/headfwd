@@ -32,4 +32,10 @@ final class MockTailscaleService: TailscaleServiceProtocol {
         config.timeoutIntervalForRequest = 15
         return URLSession(configuration: config)
     }
+
+    /// In mock/simulator mode, point straight at the local dev server so the
+    /// Simulator can load the portal when `make dev` is running on the same Mac.
+    func startPortalProxy(targetAddr: String) async throws -> URL {
+        return URL(string: "http://127.0.0.1:3001")!
+    }
 }

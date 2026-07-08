@@ -77,3 +77,30 @@ func extractIP(r *http.Request) string {
 	}
 	return host
 }
+
+// isLocalIP reports whether ip is a loopback or RFC-1918 address.
+func isLocalIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed != nil && parsed.IsLoopback() {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(ip, "10."):
+		return true
+	case strings.HasPrefix(ip, "192.168."):
+		return true
+	case strings.HasPrefix(ip, "172."):
+		parts := strings.SplitN(ip, ".", 4)
+		if len(parts) >= 2 {
+			n := 0
+			for _, c := range parts[1] {
+				if c < '0' || c > '9' {
+					return false
+				}
+				n = n*10 + int(c-'0')
+			}
+			return n >= 16 && n <= 31
+		}
+	}
+	return false
+}

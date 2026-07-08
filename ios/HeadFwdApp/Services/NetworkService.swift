@@ -22,12 +22,19 @@ actor NetworkService {
     func hello(session: URLSession, serverURL: String) async throws -> HelloResponse {
         let base = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/api/hello") else {
+            print("[HeadFwd] NetworkService: bad URL from serverURL=\(serverURL)")
             throw NetworkError.badURL
         }
-        let (data, response) = try await session.data(from: url)
+        print("[HeadFwd] NetworkService: GET \(url)")
+        // Short timeout: the SOCKS proxy is local so a healthy connection
+        // responds in milliseconds; 8 s lets us fail fast and retry.
+        let request = URLRequest(url: url, timeoutInterval: 8)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
+            print("[HeadFwd] NetworkService: non-HTTP response")
             throw NetworkError.badStatus(0, nil)
         }
+        print("[HeadFwd] NetworkService: HTTP \(http.statusCode)")
         guard http.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8)
             throw NetworkError.badStatus(http.statusCode, body)
@@ -36,6 +43,7 @@ actor NetworkService {
             return try JSONDecoder().decode(HelloResponse.self, from: data)
         } catch {
             let body = String(data: data, encoding: .utf8) ?? "(binary)"
+            print("[HeadFwd] NetworkService: decode failed, body=\(body)")
             throw NetworkError.decodeFailed(body)
         }
     }

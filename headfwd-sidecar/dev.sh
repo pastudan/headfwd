@@ -16,7 +16,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[dev] Starting Go API server on :3001..."
-PORTAL_ENABLED=1 DEV=1 HEADSCALE_URL="$HEADSCALE_URL" \
+PORTAL_ENABLED=1 DEV=1 HEADSCALE_URL="$HEADSCALE_URL" UPSTREAM_URL="http://localhost:5173" \
   go run . --update-config=false --restart-headscale=false &
 GO_PID=$!
 

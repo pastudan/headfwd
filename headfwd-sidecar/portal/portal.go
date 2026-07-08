@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/headfwd/sidecar/portal/admin"
 	"github.com/headfwd/sidecar/portal/handlers"
 	"github.com/headfwd/sidecar/portal/headscale"
+	portalmiddleware "github.com/headfwd/sidecar/portal/middleware"
 )
 
 type Config struct {
@@ -22,33 +24,77 @@ type Config struct {
 	// is served at "/" instead of the embedded frontend.
 	// Typical value: "http://localhost:5173" (used as a presence flag only).
 	ViteProxyURL string
+	// UpstreamURL, when set, reverse-proxies all non-/api/* requests to this
+	// backend URL and injects verified headscale identity headers.
+	// Examples: "http://localhost:5173" (Vite dev), "http://immich:2283" (prod).
+	// When set, the embedded frontend is not served.
+	UpstreamURL string
 	// PublicURL is the public headscale URL (e.g. https://<fingerprint>.headfwd.net); used in QR codes.
 	PublicURL string
 	// TailnetServerFunc returns the current tailnet portal URL (e.g. http://100.64.0.1:3001).
 	// It is called at key-generation time so the value can be populated asynchronously
 	// after tsnet self-registers. Returns "" until the node has joined the tailnet.
 	TailnetServerFunc func() string
+	// StateDir is the directory used to persist admin state (admins.json).
+	// When empty, admin enforcement is skipped (all requests are allowed).
+	StateDir string
 }
 
 func NewServer(cfg Config) http.Handler {
 	hsClient := headscale.NewClient(cfg.HeadscaleURL, cfg.APIKey)
 
+	var adminStore *admin.Store
+	if cfg.StateDir != "" {
+		s, err := admin.NewStore(cfg.StateDir)
+		if err != nil {
+			log.Printf("Warning: admin store init failed: %v", err)
+		} else {
+			adminStore = s
+			go func() {
+				if err := s.Bootstrap(hsClient); err != nil {
+					log.Printf("[admin] bootstrap: %v", err)
+				}
+			}()
+		}
+	}
+
+	adminMW := portalmiddleware.AdminOnly(adminStore, hsClient)
+
 	helloHandlers := &handlers.HelloHandlers{HS: hsClient}
 	userHandlers := &handlers.UserHandlers{HS: hsClient}
 	keyHandlers := &handlers.KeyHandlers{HS: hsClient, PublicURL: cfg.PublicURL, TailnetServerFunc: cfg.TailnetServerFunc}
 	nodeHandlers := &handlers.NodeHandlers{HS: hsClient}
+	meHandlers := &handlers.MeHandlers{HS: hsClient, Store: adminStore}
+	adminHandlers := &handlers.AdminHandlers{Store: adminStore, HS: hsClient}
 
 	mux := http.NewServeMux()
 
+	// Unprotected — any peer can identify themselves.
 	mux.HandleFunc("GET /api/hello", helloHandlers.Hello)
-	mux.HandleFunc("GET /api/users", userHandlers.List)
-	mux.HandleFunc("POST /api/users", userHandlers.Create)
-	mux.HandleFunc("DELETE /api/users/{name}", userHandlers.Delete)
-	mux.HandleFunc("POST /api/keys", keyHandlers.Create)
-	mux.HandleFunc("GET /api/nodes", nodeHandlers.List)
-	mux.HandleFunc("DELETE /api/nodes/{id}", nodeHandlers.Delete)
+	mux.HandleFunc("GET /api/me", meHandlers.Me)
 
-	if cfg.DevMode && cfg.ViteProxyURL != "" {
+	// Admin-only management routes.
+	mux.Handle("GET /api/users", adminMW(http.HandlerFunc(userHandlers.List)))
+	mux.Handle("POST /api/users", adminMW(http.HandlerFunc(userHandlers.Create)))
+	mux.Handle("DELETE /api/users/{name}", adminMW(http.HandlerFunc(userHandlers.Delete)))
+	mux.Handle("POST /api/keys", adminMW(http.HandlerFunc(keyHandlers.Create)))
+	mux.Handle("GET /api/nodes", adminMW(http.HandlerFunc(nodeHandlers.List)))
+	mux.Handle("DELETE /api/nodes/{id}", adminMW(http.HandlerFunc(nodeHandlers.Delete)))
+
+	// Admin CRUD.
+	mux.Handle("GET /api/admins", adminMW(http.HandlerFunc(adminHandlers.List)))
+	mux.Handle("PUT /api/admins/{name}", adminMW(http.HandlerFunc(adminHandlers.Grant)))
+	mux.Handle("DELETE /api/admins/{name}", adminMW(http.HandlerFunc(adminHandlers.Revoke)))
+
+	if cfg.UpstreamURL != "" {
+		upstream, err := handlers.NewUpstreamHandler(cfg.UpstreamURL, hsClient)
+		if err != nil {
+			log.Printf("Warning: upstream proxy setup failed (%s): %v", cfg.UpstreamURL, err)
+		} else {
+			log.Printf("Upstream proxy → %s", cfg.UpstreamURL)
+			mux.Handle("/", upstream)
+		}
+	} else if cfg.DevMode && cfg.ViteProxyURL != "" {
 		// tsnet listener in dev mode: WKWebView can't load Vite's module scripts
 		// through the custom tsnet:// scheme. Serve a clear message instead so
 		// the iOS WebView shows something useful rather than a blank page.
@@ -147,7 +193,7 @@ func serveFrontend(mux *http.ServeMux) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {

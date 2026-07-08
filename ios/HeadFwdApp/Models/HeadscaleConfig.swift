@@ -2,12 +2,13 @@ import Foundation
 
 /// Parsed from QR code JSON payload:
 /// {"server":"https://abc.headfwd.net","key":"...","tailnet_server":"http://100.64.0.1:3001","v":1}
+/// In dev mode the sidecar advertises port 5173 (Vite), which proxies /api/* to Go at :3001.
 struct HeadscaleConfig: Codable, Equatable {
     let server: String
     let key: String?          // nil after initial registration; tsnet uses stored node key thereafter
-    /// Direct tailnet address of the portal (e.g. http://100.64.0.1:3001).
+    /// Direct tailnet address for portal access (e.g. http://100.64.0.1:3001, or :5173 in dev).
     /// Present once the sidecar has self-registered as a headscale node.
-    /// iOS uses this (via makeURLSession SOCKS5) so /api/hello sees the real 100.64 IP.
+    /// Both /api/hello and the portal WebView use this single origin.
     let tailnetServer: String?
     let v: Int
 

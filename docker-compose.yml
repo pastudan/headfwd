@@ -31,27 +31,17 @@ services:
       PORTAL_PORT: ${PORTAL_PORT:-3001}
       # HEADSCALE_API_KEY is auto-bootstrapped via docker exec if not set
       HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+      # UPSTREAM_URL: when set, proxies all non-/api/* traffic to this backend
+      # and injects X-Tailscale-{User,Login,Device,IP} identity headers.
+      # Examples: http://immich:2283  http://frigate:5000  http://localhost:5173
+      UPSTREAM_URL: ${UPSTREAM_URL:-}
     volumes:
       - ./headscale/data:/keys:ro
       - ./headscale/config:/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - headfwd-tsnet:/var/lib/headfwd-ts  # persistent tsnet node keypair
+      - headfwd-tsnet:/var/lib/headfwd-ts # persistent tsnet node keypair
     depends_on:
       - headscale
 
-  # headplane:
-  #   image: ghcr.io/tale/headplane:latest
-  #   container_name: headplane
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3000:3000"
-  #   volumes:
-  #     - ./headplane/config/config.yaml:/etc/headplane/config.yaml
-  #     - ./headplane/data:/var/lib/headplane
-  #     - ./headscale/config/config.yaml:/etc/headscale/config.yaml
-  #     - /var/run/docker.sock:/var/run/docker.sock:ro
-  #   depends_on:
-  #     - headscale
-
 volumes:
-  headfwd-tsnet:  # persistent storage for tsnet WireGuard keypair
+  headfwd-tsnet: # persistent storage for tsnet WireGuard keypair

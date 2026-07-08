@@ -1,0 +1,250 @@
+diff --git a/swift/TailscaleKit/TailscaleKit.h b/swift/TailscaleKit/TailscaleKit.h
+index 184fa62..d0c7a06 100644
+--- a/swift/TailscaleKit/TailscaleKit.h
++++ b/swift/TailscaleKit/TailscaleKit.h
+@@ -182,6 +182,22 @@ extern int tailscale_accept(tailscale_listener listener, tailscale_conn* conn_ou
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_loopback(tailscale sd, char* addr_out, size_t addrlen, char* proxy_cred_out, char* local_api_cred_out);
+ 
++// tailscale_start_portal_proxy starts a local HTTP reverse proxy on
++// 127.0.0.1 that forwards all requests to target_addr (host:port) via
++// the tsnet WireGuard tunnel.  On success, *port_out is set to the
++// assigned TCP port and the caller can load http://127.0.0.1:<port>/
++// in WKWebView — a proper http:// origin that is ATS-exempt, supports
++// ES modules, and allows WebSocket upgrades.
++//
++// If a proxy is already running for this server it is stopped first.
++//
++// Returns zero on success or -1 on error; call tailscale_errmsg for details.
++extern int tailscale_start_portal_proxy(tailscale sd, const char* target_addr, int* port_out);
++
++// tailscale_stop_portal_proxy shuts down the local portal proxy for sd.
++// Safe to call when no proxy is running.
++extern int tailscale_stop_portal_proxy(tailscale sd);
++
+ // tailscale_errmsg writes the details of the last error to buf.
+ //
+ // After returning, buf is always NUL-terminated.
+diff --git a/swift/TailscaleKit/TailscaleNode.swift b/swift/TailscaleKit/TailscaleNode.swift
+index 34a6f94..1267317 100644
+--- a/swift/TailscaleKit/TailscaleNode.swift
++++ b/swift/TailscaleKit/TailscaleNode.swift
+@@ -204,6 +204,37 @@ public actor TailscaleNode {
+ 
+     private var loopbackConfig: LoopbackConfig?
+ 
++    // MARK: - Portal proxy
++
++    /// Starts a local HTTP reverse proxy on 127.0.0.1 that forwards all
++    /// requests to targetAddr (host:port) over the tsnet WireGuard tunnel.
++    ///
++    /// Returns the assigned port.  Load `http://127.0.0.1:<port>/` in
++    /// WKWebView to get a proper http:// origin:
++    ///   - ES modules execute (no custom-scheme restrictions)
++    ///   - WebSocket upgrades work (Vite HMR, real-time events)
++    ///   - ATS does not apply (localhost is always ATS-exempt)
++    ///   - All fetch('/api/…') calls hit 127.0.0.1 → same origin → no CORS
++    ///
++    /// If a proxy is already running for this node it is replaced.
++    public func startPortalProxy(targetAddr: String) throws -> Int {
++        guard let tailscale else {
++            throw TailscaleError.badInterfaceHandle
++        }
++        var port: Int32 = 0
++        let res = tailscale_start_portal_proxy(tailscale, targetAddr, &port)
++        guard res == 0 else {
++            throw TailscaleError.fromPosixErrCode(res, tailscale.getErrorMessage())
++        }
++        return Int(port)
++    }
++
++    /// Shuts down the local portal proxy. Safe to call if no proxy is running.
++    public func stopPortalProxy() {
++        guard let tailscale else { return }
++        tailscale_stop_portal_proxy(tailscale)
++    }
++
+     /// Starts and returns the address and credentials of a SOCKS5 proxy which can also
+     /// be used to query the localAPI
+     public func loopback() throws -> LoopbackConfig {
+diff --git a/tailscale.c b/tailscale.c
+index 8cbbb22..1b65f15 100644
+--- a/tailscale.c
++++ b/tailscale.c
+@@ -24,6 +24,8 @@ extern int TsnetGetRemoteAddr(int listener, int conn, char *buf, size_t buflen);
+ extern int TsnetListen(int sd, char* net, char* addr, int* listenerOut);
+ extern int TsnetLoopback(int sd, char* addrOut, size_t addrLen, char* proxyOut, char* localOut);
+ extern int TsnetEnableFunnelToLocalhostPlaintextHttp1(int sd, int localhostPort);
++extern int TsnetStartPortalProxy(int sd, char* targetAddr, int* portOut);
++extern int TsnetStopPortalProxy(int sd);
+ 
+ tailscale tailscale_new() {
+ 	return TsnetNewServer();
+@@ -108,6 +110,14 @@ int tailscale_errmsg(tailscale sd, char* buf, size_t buflen) {
+ 	return TsnetErrmsg(sd, buf, buflen);
+ }
+ 
++int tailscale_start_portal_proxy(tailscale sd, const char* target_addr, int* port_out) {
++	return TsnetStartPortalProxy(sd, (char*)target_addr, port_out);
++}
++
++int tailscale_stop_portal_proxy(tailscale sd) {
++	return TsnetStopPortalProxy(sd);
++}
++
+ int tailscale_enable_funnel_to_localhost_plaintext_http1(tailscale sd, int localhostPort) {
+ 	return TsnetEnableFunnelToLocalhostPlaintextHttp1(sd, localhostPort);
+ }
+diff --git a/tailscale.h b/tailscale.h
+index 4531f06..4590542 100644
+--- a/tailscale.h
++++ b/tailscale.h
+@@ -191,6 +191,22 @@ extern int tailscale_loopback(tailscale sd, char* addr_out, size_t addrlen, char
+ // 	-1    - other error, details printed to the tsnet logger
+ extern int tailscale_enable_funnel_to_localhost_plaintext_http1(tailscale sd, int localhostPort);
+ 
++// tailscale_start_portal_proxy starts a local HTTP reverse proxy on
++// 127.0.0.1 that forwards all requests to target_addr (host:port) via
++// the tsnet WireGuard tunnel.  On success, *port_out is set to the
++// assigned TCP port and the caller can load http://127.0.0.1:<port>/
++// in WKWebView — a proper http:// origin that is ATS-exempt, supports
++// ES modules, and allows WebSocket upgrades.
++//
++// If a proxy is already running for this server it is stopped first.
++//
++// Returns zero on success or -1 on error; call tailscale_errmsg for details.
++extern int tailscale_start_portal_proxy(tailscale sd, const char* target_addr, int* port_out);
++
++// tailscale_stop_portal_proxy shuts down the local portal proxy for sd.
++// Safe to call when no proxy is running.
++extern int tailscale_stop_portal_proxy(tailscale sd);
++
+ // tailscale_errmsg writes the details of the last error to buf.
+ // 
+ // After returning, buf is always NUL-terminated.
+diff --git a/tailscale_portal_proxy.go b/tailscale_portal_proxy.go
+new file mode 100644
+index 0000000..c17aacd
+--- /dev/null
++++ b/tailscale_portal_proxy.go
+@@ -0,0 +1,120 @@
++// Copyright (c) HeadFwd Authors
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Local HTTP portal proxy for WKWebView.
++//
++// WKWebView runs in a sandboxed WebContent process that cannot use
++// URLSessionConfiguration proxy settings. The previous tsnet:// custom-scheme
++// workaround worked for data but WKWebView refuses to execute ES-module scripts
++// from custom schemes, and WebSocket upgrades (Vite HMR) are silently dropped.
++//
++// This file starts a standard HTTP reverse proxy bound to 127.0.0.1 that
++// forwards every request to the tailnet portal over the WireGuard tunnel,
++// using tsnet.Server.Dial as the TCP dialer. WKWebView loads
++// http://127.0.0.1:<port>/ — a proper http:// origin:
++//
++//   - ES modules execute (http:// is treated as a secure-enough context).
++//   - WebSocket upgrades (ws://127.0.0.1:<port>/...) are forwarded — Vite HMR fires.
++//   - ATS does not apply (localhost is always ATS-exempt; no NSAllowsArbitraryLoads needed).
++//   - All JS fetch('/api/…') calls hit 127.0.0.1 → same origin → no CORS headers required.
++
++package main
++
++/*
++#include "errno.h"
++*/
++import "C"
++
++import (
++	"context"
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/httputil"
++	"net/url"
++	"sync"
++)
++
++// portalProxies stores the running portal proxy server for each tsnet server
++// descriptor so we can stop it cleanly on demand or restart it.
++var portalProxies struct {
++	mu sync.Mutex
++	m  map[C.int]*http.Server
++}
++
++//export TsnetStartPortalProxy
++// TsnetStartPortalProxy starts a local HTTP reverse proxy on 127.0.0.1 that
++// forwards all requests to targetAddr via the tsnet WireGuard tunnel.
++// The assigned TCP port is written to portOut on success.
++//
++// targetAddr must be host:port, e.g. "100.64.0.5:3001".
++//
++// Returns zero on success or -1 on error; call tailscale_errmsg for details.
++// If a proxy is already running for this server it is stopped first.
++func TsnetStartPortalProxy(sd C.int, targetAddr *C.char, portOut *C.int) C.int {
++	s := getServer(sd)
++	if s == nil {
++		return C.EBADF
++	}
++
++	goTarget := C.GoString(targetAddr)
++	target, err := url.Parse("http://" + goTarget)
++	if err != nil {
++		return s.recErr(fmt.Errorf("portal proxy: parse target %q: %w", goTarget, err))
++	}
++
++	proxy := httputil.NewSingleHostReverseProxy(target)
++	// Wire the proxy's outgoing dialer through the WireGuard tunnel so all
++	// TCP connections to the tailnet portal use tsnet — not the host network.
++	proxy.Transport = &http.Transport{
++		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
++			return s.s.Dial(ctx, network, addr)
++		},
++	}
++	// Preserve the Host header so the portal's mux and any upstream proxy
++	// rules route correctly (they match on the Host header).
++	origDirector := proxy.Director
++	proxy.Director = func(req *http.Request) {
++		origDirector(req)
++		req.Host = target.Host
++	}
++
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		return s.recErr(fmt.Errorf("portal proxy: listen: %w", err))
++	}
++
++	srv := &http.Server{Handler: proxy}
++
++	portalProxies.mu.Lock()
++	if portalProxies.m == nil {
++		portalProxies.m = make(map[C.int]*http.Server)
++	}
++	if existing, ok := portalProxies.m[sd]; ok {
++		existing.Close()
++	}
++	portalProxies.m[sd] = srv
++	portalProxies.mu.Unlock()
++
++	go srv.Serve(ln) //nolint:errcheck
++
++	*portOut = C.int(ln.Addr().(*net.TCPAddr).Port)
++	return 0
++}
++
++//export TsnetStopPortalProxy
++// TsnetStopPortalProxy shuts down the local portal proxy for the given server.
++// It is safe to call when no proxy is running.
++func TsnetStopPortalProxy(sd C.int) C.int {
++	portalProxies.mu.Lock()
++	srv, ok := portalProxies.m[sd]
++	if ok {
++		delete(portalProxies.m, sd)
++	}
++	portalProxies.mu.Unlock()
++
++	if srv != nil {
++		srv.Close()
++	}
++	return 0
++}

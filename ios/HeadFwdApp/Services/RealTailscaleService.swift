@@ -173,6 +173,8 @@ final class RealTailscaleService: TailscaleServiceProtocol {
         tailscaleIP = nil
         tailscaleHostname = nil
         connectionState = .disconnected
+        await activePortalProxy?.stop()
+        activePortalProxy = nil
         try? await nodeToClose?.close()
     }
 
@@ -192,5 +194,35 @@ final class RealTailscaleService: TailscaleServiceProtocol {
         let (config, _) = try await URLSessionConfiguration.tailscaleSession(node)
         config.timeoutIntervalForRequest = 15
         return URLSession(configuration: config)
+    }
+
+    // Retained to keep the NWListener alive for the life of the portal sheet.
+    private var activePortalProxy: LocalPortalProxy?
+
+    /// Starts a local HTTP reverse proxy on 127.0.0.1 that forwards all
+    /// requests to targetAddr via the WireGuard tunnel.
+    /// Returns http://127.0.0.1:PORT — load this directly in WKWebView.
+    ///
+    /// Uses a pure-Swift NWListener proxy backed by the SOCKS5 session until
+    /// the TailscaleKit framework is rebuilt with the native Go proxy.
+    func startPortalProxy(targetAddr: String) async throws -> URL {
+        guard node != nil else {
+            throw NSError(domain: "HeadFwd", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Tailnet not connected"])
+        }
+        // Stop any previous proxy before starting a new one.
+        await activePortalProxy?.stop()
+
+        let session = try await makeURLSession()
+        let proxy = LocalPortalProxy(session: session, targetBase: "http://\(targetAddr)")
+        let port = try await proxy.start()
+        activePortalProxy = proxy
+
+        guard let url = URL(string: "http://127.0.0.1:\(port)") else {
+            throw NSError(domain: "HeadFwd", code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Bad proxy port \(port)"])
+        }
+        print("[HeadFwd] RealTailscaleService: Swift portal proxy 127.0.0.1:\(port) → \(targetAddr)")
+        return url
     }
 }

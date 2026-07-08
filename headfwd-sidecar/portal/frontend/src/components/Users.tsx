@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { api, type CreateKeyResponse, type Node, type User } from "../api/client";
+import { useCurrentUser } from "./Layout";
+
+const SYSTEM_USER = "headfwd-server";
 
 export default function Users() {
+  const { userName: currentUserName, isAdmin: currentIsAdmin } = useCurrentUser();
+
   const [users, setUsers] = useState<User[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [adminNames, setAdminNames] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
@@ -15,9 +21,14 @@ export default function Users() {
 
   const refresh = async () => {
     try {
-      const [u, n] = await Promise.all([api.listUsers(), api.listNodes()]);
+      const [u, n, a] = await Promise.all([
+        api.listUsers(),
+        api.listNodes(),
+        api.listAdmins(),
+      ]);
       setUsers(u);
       setNodes(n);
+      setAdminNames(a);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -108,6 +119,10 @@ export default function Users() {
               key={user.name}
               user={user}
               nodes={nodesForUser(user.name)}
+              isAdmin={adminNames.includes(user.name)}
+              totalAdmins={adminNames.length}
+              currentUserName={currentUserName}
+              currentIsAdmin={currentIsAdmin}
               onboardingOpen={onboardingUser === user.name}
               onToggleOnboarding={() => {
                 if (onboardingUser === user.name) {
@@ -123,6 +138,7 @@ export default function Users() {
               onDeviceRegistered={() => { setOnboardingUser(null); refresh(); }}
               onDeleted={refresh}
               onNodeDeleted={refresh}
+              onAdminChanged={refresh}
             />
           ))}
         </div>
@@ -143,12 +159,35 @@ export default function Users() {
 }
 
 // ---------------------------------------------------------------------------
+// AdminBadge
+// ---------------------------------------------------------------------------
+
+function AdminBadge({ active, faint = false }: { active: boolean; faint?: boolean }) {
+  if (active) {
+    return (
+      <span className="text-xs text-blue-600 border border-blue-200 rounded px-1.5 py-px bg-blue-50 shrink-0 select-none">
+        admin
+      </span>
+    );
+  }
+  return faint ? (
+    <span className="text-xs text-gray-300 border border-gray-200 rounded px-1.5 py-px bg-white shrink-0 select-none">
+      admin
+    </span>
+  ) : null;
+}
+
+// ---------------------------------------------------------------------------
 // UserRow
 // ---------------------------------------------------------------------------
 
 function UserRow({
   user,
   nodes,
+  isAdmin,
+  totalAdmins,
+  currentUserName,
+  currentIsAdmin,
   onboardingOpen,
   onToggleOnboarding,
   keyData,
@@ -158,9 +197,14 @@ function UserRow({
   onDeviceRegistered,
   onDeleted,
   onNodeDeleted,
+  onAdminChanged,
 }: {
   user: User;
   nodes: Node[];
+  isAdmin: boolean;
+  totalAdmins: number;
+  currentUserName: string;
+  currentIsAdmin: boolean;
   onboardingOpen: boolean;
   onToggleOnboarding: () => void;
   keyData: CreateKeyResponse | null;
@@ -170,10 +214,19 @@ function UserRow({
   onDeviceRegistered: () => void;
   onDeleted: () => void;
   onNodeDeleted: () => void;
+  onAdminChanged: () => void;
 }) {
+  const isSystem = user.name === SYSTEM_USER;
+  const isSelf = user.name === currentUserName;
+  const isLastAdmin = isAdmin && totalAdmins <= 1;
+
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [confirmAdmin, setConfirmAdmin] = useState<"grant" | "revoke" | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -188,15 +241,88 @@ function UserRow({
     }
   };
 
+  const handleAdminToggle = async () => {
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      if (isAdmin) {
+        await api.revokeAdmin(user.name);
+      } else {
+        await api.grantAdmin(user.name);
+      }
+      setConfirmAdmin(null);
+      onAdminChanged();
+    } catch (e) {
+      setAdminError(e instanceof Error ? e.message : "Failed");
+      setAdminBusy(false);
+    }
+  };
+
+  const badgeDisabledReason = isSelf
+    ? "Can't remove your own access"
+    : isLastAdmin
+    ? "Can't remove the last admin"
+    : null;
+
   return (
     <div>
       {/* User header row */}
-      <div className="flex items-center px-3 py-2 gap-3 hover:bg-gray-50 group">
-        <span className="text-xs font-medium text-gray-700 w-40 truncate">{user.name}</span>
+      <div className="flex items-center px-3 py-2 gap-2 hover:bg-gray-50 group">
+        {/* Name + badges */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs font-medium text-gray-700 truncate">{user.name}</span>
+          {isSystem && (
+            <span className="text-xs text-gray-400 border border-gray-200 rounded px-1.5 py-px bg-gray-50 shrink-0">
+              system
+            </span>
+          )}
+
+          {/* Admin badge — always visible when currentIsAdmin */}
+          {!isSystem && currentIsAdmin && (
+            confirmAdmin ? (
+              <span className="flex items-center gap-1.5 text-xs shrink-0">
+                <span className={confirmAdmin === "grant" ? "text-blue-600" : "text-amber-600"}>
+                  {confirmAdmin === "grant" ? "Grant admin?" : "Remove admin?"}
+                </span>
+                <button
+                  onClick={handleAdminToggle}
+                  disabled={adminBusy}
+                  className="text-xs font-medium underline underline-offset-2 cursor-pointer disabled:opacity-50 transition-colors text-gray-700 hover:text-gray-900"
+                >
+                  {adminBusy ? "…" : "Yes"}
+                </button>
+                <button
+                  onClick={() => { setConfirmAdmin(null); setAdminError(null); }}
+                  className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : badgeDisabledReason ? (
+              <span title={badgeDisabledReason} className="cursor-default opacity-50 shrink-0">
+                <AdminBadge active={isAdmin} faint={!isAdmin} />
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmAdmin(isAdmin ? "revoke" : "grant")}
+                title={isAdmin ? "Remove admin" : "Grant admin"}
+                className="cursor-pointer hover:opacity-70 transition-opacity shrink-0"
+              >
+                <AdminBadge active={isAdmin} faint={!isAdmin} />
+              </button>
+            )
+          )}
+
+          {/* Non-admin viewer: read-only admin badge */}
+          {!isSystem && !currentIsAdmin && isAdmin && (
+            <AdminBadge active />
+          )}
+        </div>
+
         <span className="flex-1" />
 
         {/* Delete — shown on hover or while confirming, sits left of the Add button */}
-        {!onboardingOpen && (
+        {!isSystem && !onboardingOpen && (
           <div className={`flex items-center gap-2 transition-opacity ${confirmDelete ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
             {confirmDelete ? (
               <>
@@ -230,21 +356,30 @@ function UserRow({
           </div>
         )}
 
-        <button
-          onClick={onToggleOnboarding}
-          className={`text-xs px-2 py-0.5 rounded border transition-colors shrink-0 ${
-            onboardingOpen
-              ? "border-blue-300 text-blue-600 bg-blue-50"
-              : "border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300"
-          }`}
-        >
-          {onboardingOpen ? "Close" : "+ Add device"}
-        </button>
+        {/* Add device button — hidden for system user */}
+        {!isSystem && (
+          <button
+            onClick={onToggleOnboarding}
+            className={`text-xs px-2 py-0.5 rounded border transition-colors shrink-0 cursor-pointer ${
+              onboardingOpen
+                ? "border-blue-300 text-blue-600 bg-blue-50"
+                : "border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300"
+            }`}
+          >
+            {onboardingOpen ? "Close" : "+ Add device"}
+          </button>
+        )}
       </div>
 
       {deleteError && (
         <div className="px-3 py-1 text-xs text-red-500 bg-red-50 border-t border-red-100">
           {deleteError}
+        </div>
+      )}
+
+      {adminError && (
+        <div className="px-3 py-1 text-xs text-red-500 bg-red-50 border-t border-red-100">
+          {adminError}
         </div>
       )}
 
@@ -324,7 +459,7 @@ function NodeRow({
           <span className="text-xs text-gray-400 shrink-0">{node.user.name}</span>
         )}
 
-        {/* Delete — shown on hover or while confirming, sits left of the IP */}
+        {/* Delete — shown on hover or while confirming */}
         {onDeleted && (
           <div className={`flex items-center gap-1.5 transition-opacity ${confirmDelete ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
             {confirmDelete ? (
@@ -535,8 +670,3 @@ function KeyField({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// relativeTime
-// ---------------------------------------------------------------------------
-
