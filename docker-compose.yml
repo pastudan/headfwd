@@ -33,7 +33,7 @@ services:
       HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
       # UPSTREAM_URL: when set, proxies all non-/api/* traffic to this backend
       # and injects X-Tailscale-{User,Login,Device,IP} identity headers.
-      # Examples: http://immich:2283  http://frigate:5000  http://localhost:5173
+      # Examples: http://frigate:5000  http://localhost:5173
       UPSTREAM_URL: ${UPSTREAM_URL:-}
     volumes:
       - ./headscale/data:/keys:ro

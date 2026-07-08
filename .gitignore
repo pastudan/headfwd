@@ -16,3 +16,6 @@ headscale/config/noise_private.key
 tmp/
 *.tmp
 
+# immich fork (not tracked on main)
+immich/
+
