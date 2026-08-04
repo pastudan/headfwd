@@ -80,6 +80,10 @@ type RegistrationInitResponse struct {
 	Nonce          string `json:"nonce"`
 	ProxyPublicKey string `json:"proxyPublicKey"`
 	ExpiresAt      int64  `json:"expiresAt"`
+	// ProtocolVersion lets a sidecar detect a relay that predates v2. Absent
+	// (zero) means a v1 relay, which a v2 sidecar must refuse rather than
+	// silently downgrade to the weaker proof.
+	ProtocolVersion int `json:"protocolVersion"`
 }
 
 type RegistrationVerifyRequest struct {
@@ -94,10 +98,16 @@ type RegistrationVerifyResponse struct {
 }
 
 type Challenge struct {
-	PublicKey       string
-	Nonce           string
-	EphemeralPriv   []byte
+	PublicKey     string
+	Nonce         string
+	EphemeralPriv []byte
+	// EphemeralPubHex is retained because v2 binds it into the proof transcript,
+	// so verify must MAC exactly the value that was sent at init.
+	EphemeralPubHex string
 	ExpiresAt       time.Time
+	// Attempts counts failed proofs. v1 never cleared a challenge on failure,
+	// so one nonce could be attacked until it expired.
+	Attempts int
 }
 
 type Registration struct {
@@ -136,6 +146,10 @@ type Server struct {
 	tunnels       map[string]*tunnelConn
 	pending       map[string]chan TunnelResponse
 	streams       map[string]*streamClient
+
+	// Registration is unauthenticated and does real crypto work, so both
+	// endpoints are rate limited per source address.
+	regLimiter *rateLimiter
 }
 
 func newServer() *Server {
@@ -145,6 +159,10 @@ func newServer() *Server {
 		tunnels:       map[string]*tunnelConn{},
 		pending:       map[string]chan TunnelResponse{},
 		streams:       map[string]*streamClient{},
+		// Generous for real use — a sidecar registers once at startup and again
+		// only if the tunnel drops — but low enough to make brute force and CPU
+		// exhaustion pointless.
+		regLimiter: newRateLimiter(30, 10),
 	}
 }
 
@@ -179,8 +197,15 @@ func (s *Server) handleRegisterInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.regLimiter.allow(clientIP(r)) {
+		http.Error(w, "too many registration attempts", http.StatusTooManyRequests)
+		return
+	}
+
+	// Cap the body. Without this an attacker streams an unbounded JSON document
+	// and the decoder happily buffers all of it.
 	var req RegistrationInitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -189,7 +214,31 @@ func (s *Server) handleRegisterInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject a malformed key here rather than at verify. The old code accepted
+	// any "mkey:"-prefixed string at init and only failed during ECDH, which
+	// meant a garbage key still cost a keygen and occupied a challenge slot.
+	if _, err := hex.DecodeString(strings.TrimPrefix(req.PublicKey, "mkey:")); err != nil {
+		http.Error(w, "invalid publicKey", http.StatusBadRequest)
+		return
+	}
+
 	fingerprint := computeFingerprint(req.PublicKey)
+
+	// Do not let an unauthenticated caller clobber a challenge that is already
+	// in flight. Previously any party could POST /init for someone else's
+	// fingerprint and overwrite their nonce mid-registration — a trivial way to
+	// make a legitimate sidecar's verify fail forever.
+	//
+	// Whoever holds the private key will succeed on retry once the existing
+	// challenge expires, so this costs a real client at most one TTL.
+	s.mu.Lock()
+	if existing, ok := s.challenges[fingerprint]; ok && time.Now().Before(existing.ExpiresAt) {
+		s.mu.Unlock()
+		http.Error(w, "registration already in progress for this key", http.StatusConflict)
+		return
+	}
+	s.mu.Unlock()
+
 	nonce := randomHex(32)
 
 	curve := ecdh.X25519()
@@ -202,20 +251,24 @@ func (s *Server) handleRegisterInit(w http.ResponseWriter, r *http.Request) {
 
 	expiresAt := time.Now().Add(5 * time.Minute)
 
+	ephemeralPubHex := hex.EncodeToString(ephemeralPub.Bytes())
+
 	s.mu.Lock()
 	s.challenges[fingerprint] = Challenge{
-		PublicKey:     req.PublicKey,
-		Nonce:         nonce,
-		EphemeralPriv: ephemeralPriv.Bytes(),
-		ExpiresAt:     expiresAt,
+		PublicKey:       req.PublicKey,
+		Nonce:           nonce,
+		EphemeralPriv:   ephemeralPriv.Bytes(),
+		EphemeralPubHex: ephemeralPubHex,
+		ExpiresAt:       expiresAt,
 	}
 	s.mu.Unlock()
 
 	resp := RegistrationInitResponse{
-		Fingerprint:    fingerprint,
-		Nonce:          nonce,
-		ProxyPublicKey: hex.EncodeToString(ephemeralPub.Bytes()),
-		ExpiresAt:      expiresAt.UnixMilli(),
+		Fingerprint:     fingerprint,
+		Nonce:           nonce,
+		ProxyPublicKey:  ephemeralPubHex,
+		ExpiresAt:       expiresAt.UnixMilli(),
+		ProtocolVersion: ProtocolVersion,
 	}
 	writeJSON(w, resp)
 }
@@ -226,8 +279,13 @@ func (s *Server) handleRegisterVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.regLimiter.allow(clientIP(r)) {
+		http.Error(w, "too many registration attempts", http.StatusTooManyRequests)
+		return
+	}
+
 	var req RegistrationVerifyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -236,11 +294,25 @@ func (s *Server) handleRegisterVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Count this attempt before doing any crypto, and burn the challenge after
+	// a few failures. Previously a failed proof left the challenge intact, so a
+	// single nonce could be hammered for its whole 5-minute TTL.
+	const maxAttempts = 5
+
 	s.mu.Lock()
 	challenge, ok := s.challenges[req.Fingerprint]
 	if ok && time.Now().After(challenge.ExpiresAt) {
 		delete(s.challenges, req.Fingerprint)
 		ok = false
+	}
+	if ok {
+		challenge.Attempts++
+		if challenge.Attempts > maxAttempts {
+			delete(s.challenges, req.Fingerprint)
+			ok = false
+		} else {
+			s.challenges[req.Fingerprint] = challenge
+		}
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -272,7 +344,17 @@ func (s *Server) handleRegisterVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expected := hmacSHA256Hex(sharedSecret, challenge.Nonce)
+	expected, err := registrationProof(
+		sharedSecret,
+		req.Fingerprint,
+		challenge.PublicKey,
+		challenge.Nonce,
+		challenge.EphemeralPubHex,
+	)
+	if err != nil {
+		http.Error(w, "key derivation failed", http.StatusInternalServerError)
+		return
+	}
 	if !timingSafeEqual(req.Proof, expected) {
 		http.Error(w, "invalid proof", http.StatusForbidden)
 		return
@@ -617,10 +699,12 @@ func randomHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
-func hmacSHA256Hex(secret []byte, nonce string) string {
-	h := hmac.New(sha256.New, secret)
-	h.Write([]byte(nonce))
-	return hex.EncodeToString(h.Sum(nil))
+// hmacSHA256 computes a raw HMAC tag. The v2 proof derives its key with HKDF
+// first (see registration_crypto.go); this is only the MAC primitive.
+func hmacSHA256(key, msg []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(msg)
+	return h.Sum(nil)
 }
 
 func timingSafeEqual(a, b string) bool {

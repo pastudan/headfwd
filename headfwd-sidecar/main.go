@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -51,29 +50,29 @@ type TunnelMessage struct {
 }
 
 type TunnelRequest struct {
-	ID      string            `json:"id"`
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
-	Body    *string           `json:"body,omitempty"`
-	IsBinary bool             `json:"isBinary,omitempty"`
+	ID       string            `json:"id"`
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+	Body     *string           `json:"body,omitempty"`
+	IsBinary bool              `json:"isBinary,omitempty"`
 }
 
 type TunnelResponse struct {
-	ID      string            `json:"id"`
-	Status  int               `json:"status"`
-	Headers map[string]string `json:"headers"`
-	Body    *string           `json:"body,omitempty"`
-	IsBinary bool             `json:"isBinary,omitempty"`
+	ID       string            `json:"id"`
+	Status   int               `json:"status"`
+	Headers  map[string]string `json:"headers"`
+	Body     *string           `json:"body,omitempty"`
+	IsBinary bool              `json:"isBinary,omitempty"`
 }
 
 type WsOpen struct {
-	ID      string            `json:"id"`
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
-	Body    *string           `json:"body,omitempty"`
-	IsBinary bool             `json:"isBinary,omitempty"`
+	ID       string            `json:"id"`
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+	Body     *string           `json:"body,omitempty"`
+	IsBinary bool              `json:"isBinary,omitempty"`
 }
 
 type WsData struct {
@@ -102,11 +101,14 @@ type RegistrationInitResponse struct {
 	Nonce          string `json:"nonce"`
 	ProxyPublicKey string `json:"proxyPublicKey"` // Proxy's ephemeral X25519 public key
 	ExpiresAt      int64  `json:"expiresAt"`
+	// ProtocolVersion is absent (zero) on a v1 relay.
+	ProtocolVersion int `json:"protocolVersion"`
 }
 
 type RegistrationVerifyRequest struct {
 	Fingerprint string `json:"fingerprint"`
-	Proof       string `json:"proof"` // HMAC-SHA256(sharedSecret, nonce)
+	// Proof is HMAC-SHA256(HKDF(sharedSecret, salt=nonce, info=label), transcript).
+	Proof string `json:"proof"`
 }
 
 type RegistrationVerifyResponse struct {
@@ -279,9 +281,9 @@ func main() {
 				log.Printf("Warning: iOS /api/hello will not show tailnet IP until this is resolved")
 				return
 			}
-		addr := "http://" + ip + ":3001"
-		tailnetServerAddr.Store(&addr)
-		log.Printf("✓ Tailnet portal ready: %s", addr)
+			addr := "http://" + ip + ":3001"
+			tailnetServerAddr.Store(&addr)
+			log.Printf("✓ Tailnet portal ready: %s", addr)
 			// Serve portal on the tsnet listener so peers reach us at our 100.64 IP.
 			// In dev mode the embedded frontend isn't built, so proxy static requests
 			// to the local Vite server instead so the iOS WebView shows the live UI.
@@ -498,8 +500,9 @@ func (s *streamConn) write(data []byte) error {
 	return err
 }
 
-var streamMu  = &sync.Mutex{}
+var streamMu = &sync.Mutex{}
 var streamConns = map[string]*streamConn{}
+
 // wsMu serializes all writes to the tunnel websocket connection.
 // gorilla/websocket requires that only one writer is active at a time.
 var wsMu = &sync.Mutex{}
@@ -663,7 +666,7 @@ func forwardToHeadscale(req TunnelRequest) (*TunnelResponse, error) {
 	// All tunnel traffic goes to Headscale. The portal is NOT reachable via the
 	// public proxy — it is only accessible on the local tailnet (100.64.x.x).
 	targetBase := *headscaleURL
-	
+
 	var body io.Reader
 	if req.Body != nil {
 		if req.IsBinary {
@@ -1033,9 +1036,21 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (Registratio
 		return RegistrationResult{}, fmt.Errorf("failed to decode init response: %w", err)
 	}
 
-	log.Printf("Challenge received: fingerprint=%s", initResp.Fingerprint)
+	log.Printf("Challenge received: fingerprint=%s protocolVersion=%d", initResp.Fingerprint, initResp.ProtocolVersion)
 	if initResp.Fingerprint != localFingerprint {
 		return RegistrationResult{}, fmt.Errorf("proxy fingerprint mismatch: local=%s proxy=%s", localFingerprint, initResp.Fingerprint)
+	}
+
+	// Refuse to talk to a v1 relay rather than falling back to the weaker proof.
+	//
+	// A downgrade path would be worth having if v1 were merely older, but it is
+	// weaker in a way an attacker can exploit: whoever can tamper with this
+	// (plain HTTP) response could strip the version field and force the raw-ECDH
+	// proof. Failing loudly is the only safe response.
+	if initResp.ProtocolVersion != ProtocolVersion {
+		return RegistrationResult{}, fmt.Errorf(
+			"relay speaks registration protocol v%d, this sidecar requires v%d — upgrade the relay",
+			initResp.ProtocolVersion, ProtocolVersion)
 	}
 
 	// 4. Decode proxy's ephemeral X25519 public key
@@ -1062,12 +1077,19 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (Registratio
 		return RegistrationResult{}, fmt.Errorf("ECDH failed: %w", err)
 	}
 
-	// 6. Compute HMAC-SHA256 proof
-	h := hmac.New(sha256.New, sharedSecret)
-	h.Write([]byte(initResp.Nonce))
-	proof := hex.EncodeToString(h.Sum(nil))
+	// 6. Derive a MAC key with HKDF and prove over the full transcript.
+	proof, err := registrationProof(
+		sharedSecret,
+		initResp.Fingerprint,
+		keyData.PublicKey,
+		initResp.Nonce,
+		initResp.ProxyPublicKey,
+	)
+	if err != nil {
+		return RegistrationResult{}, fmt.Errorf("failed to derive proof: %w", err)
+	}
 
-	log.Printf("Computed HMAC proof")
+	log.Printf("Computed registration proof (v%d)", ProtocolVersion)
 
 	// 7. Phase 2: Submit proof for verification
 	verifyReq := RegistrationVerifyRequest{

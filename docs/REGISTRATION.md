@@ -4,7 +4,9 @@
 
 HeadFwd uses a two-phase challenge-response authentication protocol to secure registration and prevent unauthorized subdomain enumeration. This ensures only legitimate Headscale instances with valid Noise private keys can register tunnels.
 
-The proof is an **X25519 ECDH + HMAC-SHA256** exchange: the sidecar and proxy derive a shared secret from Headscale's Noise keypair and a proxy-generated ephemeral keypair, then the sidecar HMACs the challenge nonce with it. No new key material (no separate signing key) is introduced — the existing Noise X25519 key is reused. This applies to both the Fly.io (`headfwd-proxy-fly/`) and Cloudflare Workers (`headfwd-proxy/`) backends.
+The proof is an **X25519 ECDH + HKDF-SHA256 + HMAC-SHA256** exchange: the sidecar and proxy derive a shared secret from Headscale's Noise keypair and a proxy-generated ephemeral keypair, run it through HKDF to obtain a MAC key, then MAC the full registration transcript.
+
+> **Protocol v2.** v1 used the raw ECDH output directly as an HMAC key over the bare nonce. That is fixed as of v2 — see [Protocol versions](#protocol-versions). There is no downgrade path: a v2 sidecar refuses a v1 relay. No new key material (no separate signing key) is introduced — the existing Noise X25519 key is reused. This applies to both the Fly.io (`headfwd-proxy-fly/`) and Cloudflare Workers (`headfwd-proxy/`) backends.
 
 ## Security Goals
 
@@ -28,10 +30,10 @@ sequenceDiagram
     Proxy->>Proxy: Store challenge (fingerprint → nonce, ephemeral priv)
     Proxy-->>Sidecar: {fingerprint, nonce, proxyPublicKey, expiresAt}
 
-    Note over Sidecar: sharedSecret = ECDH(noisePriv, proxyPublicKey)<br/>proof = HMAC-SHA256(sharedSecret, nonce)
+    Note over Sidecar: sharedSecret = ECDH(noisePriv, proxyPublicKey)<br/>k = HKDF(sharedSecret, salt=nonce, info=label)<br/>proof = HMAC-SHA256(k, transcript)
     Sidecar->>Proxy: POST /api/register/verify<br/>{fingerprint, proof}
     Proxy->>Proxy: sharedSecret = ECDH(ephemeralPriv, sidecarPublicKey)
-    Proxy->>Proxy: Verify HMAC-SHA256(sharedSecret, nonce) == proof
+    Proxy->>Proxy: Verify HMAC-SHA256(HKDF(sharedSecret,...), transcript) == proof
     Proxy->>Proxy: Generate tunnel secret, store (fingerprint → secret)
     Proxy-->>Sidecar: {tunnelUrl, publicUrl}
 
@@ -117,7 +119,7 @@ Content-Type: application/json
 **What Happens:**
 1. Proxy retrieves the stored challenge for the fingerprint
 2. Proxy computes `sharedSecret = X25519(ephemeralPrivateKey, sidecarPublicKey)`
-3. Proxy verifies `HMAC-SHA256(sharedSecret, nonce) == proof` (timing-safe compare)
+3. Proxy verifies `HMAC-SHA256(HKDF(sharedSecret, salt=nonce, info=label), transcript) == proof` (timing-safe compare)
 4. If valid:
    - Generate tunnel secret
    - Store `{publicKey, secret}` with a 1-year TTL
@@ -179,10 +181,41 @@ This provides an **interactive proof of key possession** without adding new keys
 
 ### Proof Scheme
 - **Key agreement**: X25519 ECDH between Headscale's Noise key and the proxy's per-challenge ephemeral key
-- **Shared secret**: 32 bytes (raw ECDH output)
-- **Proof**: `HMAC-SHA256(sharedSecret, nonce)`, encoded as 64 hex characters
-- **Verification**: recompute the HMAC proxy-side and compare in constant time
+- **Key derivation**: `HKDF-SHA256(sharedSecret, salt=nonce, info="headfwd registration proof v2")` → 32-byte MAC key
+- **Proof**: `HMAC-SHA256(derivedKey, transcript)`, encoded as 64 hex characters
+- **Transcript**: length-prefixed `label ‖ fingerprint ‖ publicKey ‖ nonce ‖ proxyPublicKey`
+- **Verification**: recompute proxy-side and compare in constant time
 - **No separate signing key**: the existing Noise X25519 keypair is reused; nothing new to manage or leak
+
+### Protocol versions
+
+| | v1 | v2 (current) |
+|---|---|---|
+| MAC key | raw ECDH output | `HKDF-SHA256(ECDH, salt=nonce, info=label)` |
+| MAC message | nonce only | full length-prefixed transcript |
+| Failed-proof handling | challenge survived until TTL | challenge burned after 5 attempts |
+| Concurrent `/init` | silently overwrote the challenge | `409 Conflict` while one is in flight |
+| Rate limiting | none | token bucket per source address |
+
+**Why HKDF.** An ECDH output is a curve point, not a uniformly random key — it
+has algebraic structure, and using it directly as keying material is exactly
+what HKDF exists to prevent. It also matters here because the same long-term
+Noise static key is reused across protocols, so a chosen-input MAC oracle on it
+is a cross-protocol risk.
+
+**Why the transcript.** v1's MAC covered only the nonce, so a valid proof said
+nothing about *which* registration it authorised — not the fingerprint, not the
+ephemeral key it was derived against. Fields are length-prefixed so that
+`("ab","c")` and `("a","bc")` cannot serialise identically.
+
+**No downgrade.** `/api/register/init` returns `protocolVersion`; a v2 sidecar
+refuses anything else rather than falling back. Since init runs over plain HTTP,
+a downgrade path would let an attacker who can tamper with the response force
+the weaker proof.
+
+**The fingerprint is unchanged.** It is `SHA-256(publicKeyString)[:32]`, computed
+independently of any of this — so subdomains, pinned keys and issued invites all
+survive the upgrade untouched.
 
 ### Storage
 - **Fly.io backend**: in-memory maps in a single proxy process (challenges + registrations). If the proxy restarts, the sidecar simply re-registers automatically.
@@ -255,8 +288,10 @@ The sidecar automatically searches for Noise private key in:
 - **Attack**: Try to brute force private keys or forge a proof
 - **Defense**:
   - X25519 provides ~128-bit security; deriving the shared secret without the Noise private key is infeasible
-  - HMAC-SHA256 with a 32-byte secret makes proof forgery infeasible
-  - Rate limiting on registration endpoints (TODO)
+  - HMAC-SHA256 over an HKDF-derived key makes proof forgery infeasible
+  - Token-bucket rate limiting per source address on both registration endpoints
+  - A challenge is destroyed after 5 failed proofs, so one nonce cannot be
+    attacked for its full TTL
 
 ## Comparison with Alternatives
 
