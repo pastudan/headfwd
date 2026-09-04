@@ -116,6 +116,15 @@ type Registration struct {
 	CreatedAt time.Time
 }
 
+// A tunnel carries no traffic while nobody is contacting its Headscale, so
+// liveness has to be probed rather than observed. These are protocol-level
+// pings: RFC 6455 obliges any client to answer them, so a tunnel whose peer has
+// vanished is still reaped even if that peer sends no keepalives of its own.
+const (
+	defaultTunnelPingInterval = 30 * time.Second
+	defaultTunnelReadTimeout  = 90 * time.Second
+)
+
 type tunnelConn struct {
 	ws *websocket.Conn
 	mu sync.Mutex
@@ -125,6 +134,12 @@ func (t *tunnelConn) send(msg interface{}) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.ws.WriteJSON(msg)
+}
+
+// ping takes no lock: WriteControl is the one write gorilla permits
+// concurrently with the WriteJSON in send.
+func (t *tunnelConn) ping() error {
+	return t.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 }
 
 type streamClient struct {
@@ -150,6 +165,12 @@ type Server struct {
 	// Registration is unauthenticated and does real crypto work, so both
 	// endpoints are rate limited per source address.
 	regLimiter *rateLimiter
+
+	// Tunnel keepalive, held per-server rather than as package state so tests
+	// can shorten them without racing the goroutines that read them. Set
+	// before the first tunnel is accepted and not touched afterwards.
+	tunnelPingInterval time.Duration
+	tunnelReadTimeout  time.Duration
 }
 
 func newServer() *Server {
@@ -162,7 +183,9 @@ func newServer() *Server {
 		// Generous for real use — a sidecar registers once at startup and again
 		// only if the tunnel drops — but low enough to make brute force and CPU
 		// exhaustion pointless.
-		regLimiter: newRateLimiter(30, 10),
+		regLimiter:         newRateLimiter(30, 10),
+		tunnelPingInterval: defaultTunnelPingInterval,
+		tunnelReadTimeout:  defaultTunnelReadTimeout,
 	}
 }
 
@@ -552,8 +575,43 @@ func (s *Server) readTunnel(fingerprint string, tunnel *tunnelConn) {
 	defer func() {
 		_ = tunnel.ws.Close()
 		s.mu.Lock()
-		delete(s.tunnels, fingerprint)
+		// Retract the entry only if it still points at *this* connection. A
+		// reconnect installs its replacement before this cleanup runs, so an
+		// unconditional delete strands the live successor: it keeps answering
+		// pings while every client request gets "Headscale not connected", and
+		// the sidecar sees a healthy tunnel so it never redials.
+		current := s.tunnels[fingerprint] == tunnel
+		if current {
+			delete(s.tunnels, fingerprint)
+		}
 		s.mu.Unlock()
+		if current {
+			log.Printf("Tunnel disconnected: %s", fingerprint)
+		} else {
+			log.Printf("Stale tunnel closed, live one retained: %s", fingerprint)
+		}
+	}()
+
+	_ = tunnel.ws.SetReadDeadline(time.Now().Add(s.tunnelReadTimeout))
+	tunnel.ws.SetPongHandler(func(string) error {
+		return tunnel.ws.SetReadDeadline(time.Now().Add(s.tunnelReadTimeout))
+	})
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(s.tunnelPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if tunnel.ping() != nil {
+					return
+				}
+			}
+		}
 	}()
 
 	for {
@@ -561,6 +619,7 @@ func (s *Server) readTunnel(fingerprint string, tunnel *tunnelConn) {
 		if err := tunnel.ws.ReadJSON(&msg); err != nil {
 			return
 		}
+		_ = tunnel.ws.SetReadDeadline(time.Now().Add(s.tunnelReadTimeout))
 
 		switch msg.Type {
 		case "response":
