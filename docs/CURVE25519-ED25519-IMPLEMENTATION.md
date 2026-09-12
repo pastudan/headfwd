@@ -77,6 +77,9 @@ Headscale stores Noise keys in text format:
 privkey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
+> **Note:** All key values in this document are non-functional placeholders for
+> illustration only. Never commit or share a real `noise_private.key`.
+
 Parse this format:
 ```go
 keyStr := string(keyData)

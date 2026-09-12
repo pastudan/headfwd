@@ -60,11 +60,15 @@ Code signing settings live in `project.yml` (`DEVELOPMENT_TEAM`, `CODE_SIGN_STYL
 Xcode → target → Signing & Capabilities once to let Xcode refresh the provisioning
 profile, then CLI builds work again.
 
-Known team IDs:
-- `YOUR_APPLE_TEAM_ID` — personal (dan@hexial.com)
-- `YOUR_APPLE_TEAM_ID` — the app publisher
+Set your own Apple Developer Team ID (find it in Xcode → Settings → Accounts, or at
+developer.apple.com → Membership):
 
-Override with `make build-device TEAM=YOUR_APPLE_TEAM_ID`.
+```bash
+export HEADFWD_TEAM_ID=XXXXXXXXXX
+export HEADFWD_DEVICE_UDID=...    # xcrun xctrace list devices
+```
+
+Or override per-invocation with `make build-device TEAM=XXXXXXXXXX`.
 
 ## Files
 

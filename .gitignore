@@ -1,6 +1,9 @@
 # Headscale data
 headscale/data/
 
+# Headplane runtime data (SQLite state, not part of repo)
+headplane/data/
+
 # pnpm store (local cache, not part of repo)
 .pnpm-store/
 headscale/config/private.key

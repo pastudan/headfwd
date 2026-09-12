@@ -4,8 +4,8 @@
 
 APNs (Apple Push Notification service) is built on the assumption that the **app developer**
 controls the push server. The `.p8` auth key you create in the Apple Developer portal
-authenticates **the app publisher** to Apple. It proves "I am allowed to send pushes to devices
-running `net.headfwd.app`".
+authenticates **the app publisher** to Apple. It proves "I am allowed to send pushes to
+devices running `net.headfwd.app`".
 
 **This key cannot be shipped in the headfwd-sidecar Docker image.** Any user who runs
 `docker inspect` or extracts the binary gets it, can send arbitrary notifications to every
@@ -31,8 +31,8 @@ The standard pattern for self-hosted apps — used by Matrix/Element, Nextcloud,
 user's sidecar  →  push.headfwd.net  →  APNs  →  device
 ```
 
-The `.p8` key lives only on `push.headfwd.net`, which the app publisher controls. The sidecar
-sends an authenticated push request; the relay fires it. Users never see the key.
+The `.p8` key lives only on `push.headfwd.net`, which the app publisher controls. The
+sidecar sends an authenticated push request; the relay fires it. Users never see the key.
 
 This is identical to how Matrix homeservers use [Sygnal](https://github.com/matrix-org/sygnal)
 for push — the pattern is well understood. The relay is a small, stateless Go service

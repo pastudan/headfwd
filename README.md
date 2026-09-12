@@ -144,7 +144,7 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 - **Cloudflare Workers:** free tier covers 100+ Headscale instances; hibernating WebSockets mean you're only billed when a tunnel is active
 - Either way, the proxy only relays encrypted traffic — no per-GB data egress for the control plane
 
-## Security
+## Security Properties at a Glance
 
 - **Challenge-Response Authentication** - Cryptographic proof of Headscale ownership
 - **128-bit Fingerprints** - Collision-resistant subdomain identifiers (hex32)
@@ -180,6 +180,10 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 2. Run Headscale + sidecar; the sidecar auto-registers with challenge-response auth
 3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net`
 4. Connect the iOS app (or any Tailscale client) via QR onboarding
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
 
 ## References
 

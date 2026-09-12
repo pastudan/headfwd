@@ -60,11 +60,10 @@ generate:
 
 SCHEME      := HeadFwdApp
 SIM_DEST    := platform=iOS Simulator,name=iPhone 16
-DEVICE_UDID := YOUR_DEVICE_UDID
-# Known teams:
-#   YOUR_APPLE_TEAM_ID  dan@hexial.com (personal)
-#   YOUR_APPLE_TEAM_ID  the app publisher (via dan@hexial.com)
-TEAM        ?= YOUR_APPLE_TEAM_ID
+# Your device's UDID (find it with: xcrun xctrace list devices)
+DEVICE_UDID ?= $(HEADFWD_DEVICE_UDID)
+# Your Apple Developer Team ID (Xcode → Settings → Accounts)
+TEAM        ?= $(HEADFWD_TEAM_ID)
 
 build-sim: generate
 	xcodebuild build \

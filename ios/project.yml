@@ -21,7 +21,8 @@ schemes:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: "YOUR_APPLE_TEAM_ID"
+    # Set to your own Apple Developer Team ID before building for a device.
+    DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
 
