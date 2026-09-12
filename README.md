@@ -191,4 +191,3 @@ MIT — see [`LICENSE`](LICENSE).
 - [Tailscale](https://tailscale.com/)
 - [Fly.io](https://fly.io/)
 - [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/)
-- Inspired by [headfwd-agent](https://github.com/headfwd/headfwd-agent)

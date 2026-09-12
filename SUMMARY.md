@@ -46,7 +46,7 @@ Runs alongside Headscale
 ✅ **Fly.io primary** - Supports TS2021; Cloudflare kept as HTTP-only fallback  
 ✅ **Sidecar pattern** - No Headscale modifications  
 ✅ **X25519 ECDH + HMAC-SHA256** - Reuses the Noise key; no new secrets  
-✅ **Inspired by headfwd-agent** - Proven approach
+✅ **Proven reverse-tunnel approach** - Same pattern as ngrok/Cloudflare Tunnel
 
 ## Cost
 

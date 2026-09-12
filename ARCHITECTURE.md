@@ -23,7 +23,7 @@ Most Headscale instances run at home behind NAT/firewalls. They can't accept inb
 3. Proxy forwards through the tunnel
 4. Headscale responds back through tunnel
 
-**This is exactly like ngrok, Cloudflare Tunnel, or headfwd-agent.**
+**This is exactly like ngrok or Cloudflare Tunnel.**
 
 ## Components
 
