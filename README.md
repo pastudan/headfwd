@@ -185,6 +185,8 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 
 MIT — see [`LICENSE`](LICENSE).
 
+Built by [@pastudan](https://github.com/pastudan) as a personal project, now maintained by Bridge.
+
 ## References
 
 - [Headscale](https://headscale.net/)
