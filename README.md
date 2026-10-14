@@ -18,7 +18,8 @@ HeadFwd lets you access your self-hosted apps from anywhere using Headscale (sel
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-default-dark.svg">
   <img alt="HeadFwd architecture: Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a WSS tunnel to the untrusted HeadFwd proxy; clients open their own WSS tunnel to the proxy, which splices it into the sidecar's tunnel. The control traffic inside is Noise-encrypted end to end so only Headscale can read it, and devices then reach your app over a secure direct WireGuard channel." src="docs/images/architecture-default-light.svg" width="960">
-</picture>\
+</picture>
+
 You now have the best of both worlds; a secure, fully local control plane AND remote access.
 
 1. The sidecar dials out and keeps a persistent WSS tunnel open to the proxy, so no inbound ports are needed.
@@ -27,15 +28,15 @@ You now have the best of both worlds; a secure, fully local control plane AND re
 
 Headscale, the sidecar and your app don't have to be separate services: they can ship together as a single app.
 
-The proxy is a stateless relay and only forwards to your Headscale based on your your public fingerprint (the subdomain in \`\<fingerprint>.headfwd.net\`. It never sees your keys or plaintext.
+The proxy is a stateless relay and only forwards to your Headscale based on your public fingerprint (the subdomain in `<fingerprint>.headfwd.net`). It never sees your keys or plaintext.
 
-I've been using this for my apps for 6 months now, and its been working super reliably. Since hosting a control plane proxy costs next to nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use for at least the next 5 years.
+I've been using this for my apps for 6 months now, and it's been working super reliably. Since hosting a control plane proxy costs next to nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use for at least the next 5 years.
 
 ## Example: Frigate cameras
 
 You've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
 
-* **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video. It also adds latency and has to carry a lot of bandwidth
+* **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video. It also adds latency and has to carry a lot of bandwidth.
 * **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
 * **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
 

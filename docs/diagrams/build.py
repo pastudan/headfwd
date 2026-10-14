@@ -7,7 +7,9 @@ editing either, re-run:
     python3 docs/diagrams/build.py
 
 Writes the HTML sources to docs/diagrams/src/ and exports standalone SVGs to
-docs/images/ via the diagram-design skill's export helper.
+docs/images/ via the diagram-design skill's export helper
+(.agents/skills/diagram-design/scripts/export_svg.py, from
+github.com/cathrynlavery/diagram-design; not committed here).
 """
 
 from __future__ import annotations
@@ -291,6 +293,12 @@ img{{width:100%;height:auto;display:block;border:1px solid #bbb}}
 
 
 def main() -> int:
+    if not EXPORT.is_file():
+        print(f"error: SVG exporter not found at {EXPORT.relative_to(ROOT)}\n"
+              "It ships with the diagram-design agent skill (github.com/cathrynlavery/diagram-design),\n"
+              "which is not committed to this repo. Install that skill into .agents/skills/ and re-run.",
+              file=sys.stderr)
+        return 2
     SRC_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     failed = False
