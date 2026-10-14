@@ -29,8 +29,6 @@ You now have the best of both worlds; a secure, fully local control plane AND re
 The proxy is a stateless relay and only routes to your Headscale based on your public fingerprint (the subdomain in `<fingerprint>.headfwd.net`). It never sees your keys or plaintext. Even if a rogue relay forwards to the wrong Headscale instance, your clients will reject it since they pin the fingerprint.
 
 > Personal note: I've been using this in my apps for ~6 months now, and it's been working super reliably. Since hosting a control plane proxy carries no data, and costs virtually nothing, I intend to keep `headfwd.net` running as a free public proxy for anyone to use in their apps, indefinitely. I've got experience running systems at scale, and I can fight the abuse it receives. That said, feel free to run your own proxy or only use me as backup.
->
-> But I could get hit by a bus. So, a call to action: **if you can run a second public proxy, please do.** The proxy is deliberately dumb: it holds no keys and sees no plaintext, so a second operator doesn't need anyone's trust. With two independent proxies, we can recommend both, and apps can be built to use either one, so no single operator (including me) is a point of failure. Today the sidecar registers with one proxy at a time; supporting two at once is the next step.
 
 ## Example: Frigate cameras
 
@@ -171,6 +169,14 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 MIT — see [`LICENSE`](LICENSE).
 
 Built by [@pastudan](https://github.com/pastudan) as a personal project, now maintained by Bridge.
+
+## Wanted: a second public proxy
+
+I plan to keep `headfwd.net` online for good, but I could get hit by a bus. I'd like one more public proxy that the docs can recommend alongside mine, as a backup or co-primary, so no single operator (including me) is a point of failure.
+
+The proxy is deliberately dumb: it holds no keys and sees no plaintext, so whoever runs it doesn't need anyone's trust. What it does need is someone willing to commit to keeping it online for the long haul.
+
+If that's you, please [reach out to me](https://github.com/pastudan) and I'll add your proxy to the docs. Please don't spin up a public proxy without getting in touch first: the goal is two well-known, long-lived proxies, not many short-lived ones.
 
 ## References
 
