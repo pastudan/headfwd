@@ -28,7 +28,9 @@ You now have the best of both worlds; a secure, fully local control plane AND re
 
 The proxy is a stateless relay and only routes to your Headscale based on your public fingerprint (the subdomain in `<fingerprint>.headfwd.net`). It never sees your keys or plaintext. Even if a rogue relay forwards to the wrong Headscale instance, your clients will reject it since they pin the fingerprint.
 
-> Personal note: I've been using this in my apps for ~6 months now, and it's been working super reliably. Since hosting a control plane proxy carries no data, and costs virtually nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use in their apps for **at least** the next 5 years. I've got experience running systems at scale, and I can fight the abuse it receives. That said, feel free to run your own proxy or only use me as backup.
+> Personal note: I've been using this in my apps for ~6 months now, and it's been working super reliably. Since hosting a control plane proxy carries no data, and costs virtually nothing, I intend to keep `headfwd.net` running as a free public proxy for anyone to use in their apps, indefinitely. I've got experience running systems at scale, and I can fight the abuse it receives. That said, feel free to run your own proxy or only use me as backup.
+>
+> But I could get hit by a bus. So, a call to action: **if you can run a second public proxy, please do.** The proxy is deliberately dumb: it holds no keys and sees no plaintext, so a second operator doesn't need anyone's trust. With two independent proxies, we can recommend both, and apps can be built to use either one, so no single operator (including me) is a point of failure. Today the sidecar registers with one proxy at a time; supporting two at once is the next step.
 
 ## Example: Frigate cameras
 
@@ -133,7 +135,7 @@ Clients scan a local QR code, connect to `https://abc123.headfwd.net` instead of
 * The proxy only relays encrypted control traffic — no per-GB data egress for the control plane
 
 If you want to use my public `headfwd.net` relay:
-* Nothing. I'll keep this online and free as long as I am alive.
+* Nothing. It's free, and I plan to keep it online for good. And if it ever does go away, you're not locked in: your keys and fingerprint stay the same, so you point the sidecar at another proxy with `--proxy`, re-register, and have your devices scan a fresh QR code.
 
 ## Security Properties at a Glance
 

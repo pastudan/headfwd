@@ -167,22 +167,27 @@ def svg_body(t: dict[str, str], slug: str) -> str:
     c.add(f'<line x1="734" y1="240" x2="610" y2="240" stroke="{link}" stroke-width="1.2" marker-end="url(#arrow-link)"/>')
     # Sidecar hands control traffic to Headscale locally
     c.add(f'<line x1="192" y1="208" x2="192" y2="162" stroke="{muted}" stroke-width="1.2" marker-end="url(#arrow)"/>')
+    # Optional: your app drives the sidecar's user + device management API, so
+    # onboarding (create user, preauth key, QR) can live in your app's own UI.
+    c.add(f'<line x1="144" y1="318" x2="144" y2="274" stroke="{muted}" stroke-width="1.2" '
+          f'stroke-dasharray="4,3" marker-end="url(#arrow)"/>')
     # 3. WireGuard, direct where possible (bypasses the relay); traffic flows both ways
-    c.add(f'<path d="M 816,274 V 344 Q 816,352 808,352 H 298" fill="none" stroke="{ink}" stroke-width="1.2" '
+    c.add(f'<path d="M 816,282 V 344 Q 816,352 808,352 H 298" fill="none" stroke="{ink}" stroke-width="1.2" '
           f'marker-start="url(#arrow-ink)" marker-end="url(#arrow-ink)"/>')
 
     # Labels
     c.label(372, 240, "WSS TUNNEL", accent, "above", step=1)
     c.label(684, 240, "WSS TUNNEL", link, "above", step=2)
     c.side_label(192, 184, "LOCAL", muted)
+    c.side_label(144, 296, "USER + DEVICE MGMT", muted)
     c.label(560, 352, "DIRECT CHANNEL VIA WIREGUARD", ink, "above", step=3)
 
     # Nodes
     c.node(88, 96, 208, 64, "backend", "CTRL", "Headscale", "control plane")
     c.node(88, 208, 208, 64, "focal", "SIDECAR", "HeadFwd sidecar", "headfwd-sidecar")
     c.node(88, 320, 208, 64, "backend", "APP", "Your app", "e.g. Frigate · Immich")
-    c.node(448, 200, 160, 80, "external", "PROXY", "HeadFwd proxy", "&lt;fingerprint&gt;.headfwd.net", "Fly.io · CF Workers")
-    c.node(736, 208, 160, 64, "input", "CLIENT", "Client", "iOS app · web UI")
+    c.node(448, 200, 160, 80, "external", "PROXY", "HeadFwd proxy", "&lt;fingerprint&gt;.headfwd.net", "hosted on Fly.io")
+    c.node(736, 200, 160, 80, "input", "CLIENT", "Client", "iOS / Android app", "libtailscale baked in")
 
     # Legend strip
     ly = 440
@@ -193,18 +198,23 @@ def svg_body(t: dict[str, str], slug: str) -> str:
         ("box", rgba(accent, 0.09), accent, None, "HeadFwd sidecar"),
         ("box", t["node"], ink, None, "Self-hosted"),
         ("box", rgba(ink, 0.03), rgba(ink, 0.34), None, "Untrusted relay"),
-        ("line", accent, "arrow-accent", False, "Outbound tunnel"),
-        ("line", link, "arrow-link", False, "Client tunnel · Noise E2E"),
-        ("line", ink, "arrow-ink", True, "Direct WireGuard"),
+        ("line", accent, "arrow-accent", "", "Outbound tunnel"),
+        ("line", link, "arrow-link", "", "Client tunnel · Noise E2E"),
+        ("line", ink, "arrow-ink", "both", "Direct WireGuard"),
+        ("line", muted, "arrow", "dash", "Optional in-app onboarding"),
     ]
-    for kind, a, b, both_ends, text in items:
+    for kind, a, b, style, text in items:
+        # Wrap to a second row rather than run past the right margin.
+        if (lx + (20 if kind == "box" else 34) + r4(len(text) * 4.9)) > W - 40:
+            lx, iy = 112, iy + 18
         if kind == "box":
             c.add(f'<rect x="{lx}" y="{iy}" width="14" height="10" rx="2" fill="{a}" stroke="{b}" stroke-width="1"/>')
             tx = lx + 20
         else:
-            start = f' marker-start="url(#{b})"' if both_ends else ""
+            start = f' marker-start="url(#{b})"' if style == "both" else ""
+            dash = ' stroke-dasharray="4,3"' if style == "dash" else ""
             c.add(f'<line x1="{lx + 2}" y1="{iy + 5}" x2="{lx + 26}" y2="{iy + 5}" stroke="{a}" stroke-width="1.2"'
-                  f'{start} marker-end="url(#{b})"/>')
+                  f'{dash}{start} marker-end="url(#{b})"/>')
             tx = lx + 34
         c.add(f'<text x="{tx}" y="{iy + 8.5:g}" fill="{muted}" font-size="8.5" font-family="{SANS}">{text}</text>')
         lx = tx + r4(len(text) * 4.9) + 20
@@ -217,7 +227,7 @@ def svg_body(t: dict[str, str], slug: str) -> str:
     body = "\n      ".join(c.parts)
     return f'''<svg viewBox="0 {TOP} {W} {H - TOP}" width="{W}" height="{H - TOP}" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="{slug}-title {slug}-desc">
       <title id="{slug}-title">HeadFwd architecture</title>
-      <desc id="{slug}-desc">Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a persistent WSS tunnel to an untrusted HeadFwd proxy. Clients open their own WSS tunnel to the proxy at their fingerprint subdomain, and the proxy splices it into the sidecar's tunnel; the control traffic inside is Noise-encrypted end to end, so only Headscale can read it. Devices then reach your app over a secure direct WireGuard channel.</desc>
+      <desc id="{slug}-desc">Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a persistent WSS tunnel to an untrusted HeadFwd proxy. Clients open their own WSS tunnel to the proxy at their fingerprint subdomain, and the proxy splices it into the sidecar's tunnel; the control traffic inside is Noise-encrypted end to end, so only Headscale can read it. Devices then reach your app over a secure direct WireGuard channel. Optionally, your app can call the sidecar's user and device management API, so onboarding lives in your app's own UI.</desc>
       <defs>
       {markers}
       </defs>
