@@ -4,11 +4,11 @@ WORKDIR /build
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN go build -o headfwd-proxy-fly .
+RUN go build -o headfwd-proxy .
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates
-COPY --from=builder /build/headfwd-proxy-fly /usr/local/bin/
+COPY --from=builder /build/headfwd-proxy /usr/local/bin/
 ENV PORT=8080
 EXPOSE 8080
-ENTRYPOINT ["headfwd-proxy-fly"]
+ENTRYPOINT ["headfwd-proxy"]

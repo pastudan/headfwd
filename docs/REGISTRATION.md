@@ -6,7 +6,7 @@ HeadFwd uses a two-phase challenge-response authentication protocol to secure re
 
 The proof is an **X25519 ECDH + HKDF-SHA256 + HMAC-SHA256** exchange: the sidecar and proxy derive a shared secret from Headscale's Noise keypair and a proxy-generated ephemeral keypair, run it through HKDF to obtain a MAC key, then MAC the full registration transcript.
 
-> **Protocol v2.** v1 used the raw ECDH output directly as an HMAC key over the bare nonce. That is fixed as of v2 — see [Protocol versions](#protocol-versions). There is no downgrade path: a v2 sidecar refuses a v1 relay. No new key material (no separate signing key) is introduced — the existing Noise X25519 key is reused. This applies to both the Fly.io (`headfwd-proxy-fly/`) and Cloudflare Workers (`headfwd-proxy/`) backends.
+> **Protocol v2.** v1 used the raw ECDH output directly as an HMAC key over the bare nonce. That is fixed as of v2 — see [Protocol versions](#protocol-versions). There is no downgrade path: a v2 sidecar refuses a v1 relay. No new key material (no separate signing key) is introduced — the existing Noise X25519 key is reused. This is implemented in the proxy at `headfwd-proxy/` (Fly.io).
 
 ## Security Goals
 
@@ -218,8 +218,7 @@ independently of any of this — so subdomains, pinned keys and issued invites a
 survive the upgrade untouched.
 
 ### Storage
-- **Fly.io backend**: in-memory maps in a single proxy process (challenges + registrations). If the proxy restarts, the sidecar simply re-registers automatically.
-- **Cloudflare Workers backend**: `REGISTRY` KV namespace — `challenge:{fingerprint}` (TTL: 5 minutes) and `tunnel:{fingerprint}` (TTL: 1 year).
+- In-memory maps in a single proxy process (challenges + registrations). If the proxy restarts, the sidecar simply re-registers automatically.
 
 ## Sidecar Implementation
 
@@ -315,5 +314,4 @@ The sidecar automatically searches for Noise private key in:
 - [Noise Protocol Framework](http://www.noiseprotocol.org/)
 - [X25519 (RFC 7748)](https://datatracker.ietf.org/doc/html/rfc7748)
 - [HMAC (RFC 2104)](https://datatracker.ietf.org/doc/html/rfc2104)
-- [Cloudflare Workers KV](https://developers.cloudflare.com/kv/)
 - [Headscale Documentation](https://headscale.net/)

@@ -1,117 +1,43 @@
-# HeadFwd Proxy
+# HeadFwd Proxy (Fly.io)
 
-Cloudflare Workers + Durable Objects reverse tunnel proxy for Headscale.
+This is the HeadFwd proxy, deployed on Fly.io. It supports custom HTTP upgrades (required for TS2021).
 
-## Architecture
+The earlier Cloudflare Workers + Durable Objects version is parked on the [`cloudflare-proxy`](https://github.com/pastudan/headfwd/tree/cloudflare-proxy) branch until Workers can proxy TS2021's custom HTTP Upgrade.
 
-```
-Headscale Sidecar → [WebSocket] → Durable Object ← [HTTP] ← Clients
-```
+## Prereqs
 
-Each Headscale instance gets one Durable Object that holds its persistent tunnel.
+- `flyctl` installed and logged in
 
-## Development
+## Quick Start
 
 ```bash
-npm install
-npm run dev
-```
+cd headfwd-proxy
 
-## Deployment
+# Create app (choose a name)
+fly launch --no-deploy
 
-```bash
-# Login
-npx wrangler login
-
-# Create KV namespace
-npx wrangler kv namespace create REGISTRY
-# Update wrangler.jsonc with ID
-
-# Set secret
-npx wrangler secret put TUNNEL_SECRET
+# Optional: set your apex domain for correct subdomains
+fly secrets set PUBLIC_HOST=headfwd.net
 
 # Deploy
-npm run deploy
-
-# Configure DNS routes in Cloudflare dashboard:
-# - headfwd.net/*
-# - *.headfwd.net/*
+fly deploy
 ```
 
-## Usage
+## Custom Domains
 
-### Register Headscale
+After deployment, attach your domain to the Fly app:
 
 ```bash
-curl -X POST https://headfwd.net/api/register \
-  -H "Content-Type: application/json" \
-  -d '{"pubkey": "YOUR_HEADSCALE_PUBKEY"}'
+fly domains add headfwd.net
+fly domains add '*.headfwd.net'
 ```
 
-Returns:
-```json
-{
-  "fingerprint": "abc123...xyz",
-  "tunnelUrl": "wss://abc123.headfwd.net/tunnel?auth=SECRET",
-  "publicUrl": "https://abc123.headfwd.net"
-}
-```
+Then configure the DNS records Fly gives you.
 
-### Start Sidecar
+## Notes
 
-```bash
-./headfwd-sidecar --tunnel "wss://abc123.headfwd.net/tunnel?auth=SECRET"
-```
-
-### Update Headscale Config
-
-```yaml
-server_url: https://abc123.headfwd.net
-```
-
-Done! Clients can now connect through the tunnel.
-
-## Protocol
-
-WebSocket messages between sidecar and proxy:
-
-```typescript
-// Request (proxy → sidecar)
-{
-  "type": "request",
-  "data": {
-    "id": "uuid",
-    "method": "GET",
-    "url": "/api/v1/key",
-    "headers": {...},
-    "body": "..."
-  }
-}
-
-// Response (sidecar → proxy)
-{
-  "type": "response",
-  "data": {
-    "id": "uuid",
-    "status": 200,
-    "headers": {...},
-    "body": "..."
-  }
-}
-
-// Keepalive
-{ "type": "ping" }
-{ "type": "pong" }
-```
-
-## Cost
-
-Free tier: 1M DO requests/month = 100+ Headscale instances  
-Paid: $0.15/M DO requests + hibernation savings
-
-## Security
-
-- Tunnel authenticated with secret
-- Zero-knowledge (proxy can't decrypt WireGuard traffic)
-- Headscale validates all client keys
-
+- This proxy stores registrations in memory. If the app restarts, the sidecar will re-register automatically.
+- Run a single instance to keep tunnel state consistent:
+  ```bash
+  fly scale count 1
+  ```

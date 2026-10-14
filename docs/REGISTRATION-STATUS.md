@@ -7,7 +7,7 @@
 3. **Challenge-Response Protocol** - Nonce generation and expiration (5 minutes)
 4. **Cryptographic Proof of Ownership** - X25519 ECDH + HMAC-SHA256 (see below)
 5. **Sidecar Auto-Registration** - `--register` flag with automatic key detection
-6. **Two Proxy Backends** - Fly.io (Go, in-memory, TS2021-capable) and Cloudflare Workers (TypeScript + KV, HTTP-only)
+6. **Proxy** - Go on Fly.io (in-memory, TS2021-capable) at `headfwd-proxy/`; the Cloudflare Workers version is parked on the `cloudflare-proxy` branch
 7. **Documentation** - `docs/REGISTRATION.md` (protocol) and `docs/ios-key-verification.md` (client-side pinning)
 
 ## ✅ Resolved: Proof of Ownership Without a Signing Key
@@ -34,16 +34,14 @@ Because ECDH is symmetric, only the holder of Headscale's Noise **private** key
 can produce a matching proof — giving cryptographic proof of ownership without a
 signing key, key conversion, or any Headscale modifications.
 
-This is implemented in both `headfwd-sidecar/main.go` and both proxy backends
-(`headfwd-proxy-fly/main.go`, `headfwd-proxy/src/index.ts`). There is no longer a
+This is implemented in both `headfwd-sidecar/main.go` and the proxy
+(`headfwd-proxy/main.go`). There is no longer a
 "legacy" unauthenticated registration endpoint.
 
 ## Storage
 
-- **Fly.io backend**: in-memory maps in a single proxy process. If the proxy
-  restarts, the sidecar re-registers automatically.
-- **Cloudflare Workers backend**: `REGISTRY` KV — `challenge:{fingerprint}`
-  (5-minute TTL) and `tunnel:{fingerprint}` (1-year TTL).
+- In-memory maps in a single proxy process. If the proxy restarts, the sidecar
+  re-registers automatically.
 
 ## Security Properties
 

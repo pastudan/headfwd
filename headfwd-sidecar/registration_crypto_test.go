@@ -3,7 +3,7 @@ package main
 import "testing"
 
 // This vector MUST match the one pinned in
-// headfwd-proxy-fly/registration_crypto_test.go.
+// headfwd-proxy/registration_crypto_test.go.
 //
 // The two components carry independent copies of the registration crypto and
 // never share a package. If they drift, every registration fails with "invalid

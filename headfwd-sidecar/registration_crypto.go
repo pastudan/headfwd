@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 )
 
-// Registration proof crypto. MUST match headfwd-proxy-fly/registration_crypto.go
+// Registration proof crypto. MUST match headfwd-proxy/registration_crypto.go
 // byte for byte — the relay recomputes this and compares, so any divergence
 // makes every registration fail.
 //

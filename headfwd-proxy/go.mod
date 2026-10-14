@@ -1,4 +1,4 @@
-module github.com/headfwd/proxyfly
+module github.com/headfwd/proxy
 
 go 1.25
 

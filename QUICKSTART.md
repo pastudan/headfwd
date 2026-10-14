@@ -4,41 +4,16 @@ Get Headscale accessible from anywhere in 3 steps.
 
 ## 1. Deploy Proxy (5 minutes)
 
-### Option A: Fly.io (recommended for TS2021)
+The proxy runs on Fly.io:
 
 ```bash
-cd headfwd-proxy-fly
+cd headfwd-proxy
 fly launch --no-deploy
 fly secrets set PUBLIC_HOST=headfwd.net
 fly deploy
 ```
 
-### Option B: Cloudflare Workers (HTTP-only)
-
-```bash
-cd headfwd-proxy
-npm install
-
-# Login to Cloudflare
-npx wrangler login
-
-# Create KV namespace
-npx wrangler kv namespace create REGISTRY
-# Copy the ID and update wrangler.jsonc
-
-# Set tunnel secret
-npx wrangler secret put TUNNEL_SECRET
-# Enter a secure random string
-
-# Deploy
-npm run deploy
-
-# Configure routes in Cloudflare dashboard:
-# Workers & Pages → headfwd-proxy → Settings → Triggers
-# Add routes: headfwd.net/* and *.headfwd.net/*
-```
-
-> **Note:** Tailscale TS2021 uses a custom HTTP Upgrade that Cloudflare Workers cannot proxy. Use Fly.io for full control-plane support.
+> The earlier Cloudflare Workers version is parked on the `cloudflare-proxy` branch until Workers can proxy TS2021's custom HTTP Upgrade.
 
 ## 2. Start Headscale + Sidecar (5 minutes)
 

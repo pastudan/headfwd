@@ -4,7 +4,7 @@ A secure design pattern for reaching self-hosted apps at home.
 
 ## What Is This?
 
-HeadFwd lets you access your self-hosted apps from anywhere using Headscale (self-hosted Tailscale), even if your server is behind NAT/firewall.
+HeadFwd lets you access your self-hosted apps from anywhere using [Headscale](https://github.com/juanfont/headscale) (self-hosted Tailscale), even if your server is behind NAT/firewall.
 
 **Problem:** Setting up remote access for a self-hosted app sucks. Typically, you:
 1. Set up port forwarding so you can get to your app
@@ -44,8 +44,7 @@ With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either a
 
 ## Components
 
-- **`headfwd-proxy-fly/`** - Go proxy for Fly.io (recommended; full TS2021 control-plane support)
-- **`headfwd-proxy/`** - Cloudflare Workers + Durable Objects proxy (HTTP-only alternative)
+- **`headfwd-proxy/`** - Go proxy, deployed on Fly.io (full TS2021 control-plane support). A Cloudflare Workers version is parked on the [`cloudflare-proxy`](https://github.com/pastudan/headfwd/tree/cloudflare-proxy) branch until Workers can proxy TS2021's custom HTTP Upgrade.
 - **`headfwd-sidecar/`** - Go sidecar that runs with Headscale: opens the tunnel, auto-registers, and serves an optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
 - **`ios/`** - SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
 - **`docs/REGISTRATION.md`** - Sidecar↔proxy registration protocol (X25519 ECDH + HMAC-SHA256 challenge-response)
@@ -71,26 +70,14 @@ See **[`docs/ios-key-verification.md`](docs/ios-key-verification.md)** for the f
 
 ### 1. Deploy Proxy
 
-**Option A: Fly.io (recommended for TS2021)**
+You can use the public proxy at `headfwd.net`, or run your own on Fly.io:
 
 ```bash
-cd headfwd-proxy-fly
+cd headfwd-proxy
 fly launch --no-deploy
 fly secrets set PUBLIC_HOST=headfwd.net
 fly deploy
 ```
-
-**Option B: Cloudflare Workers (HTTP-only)**
-
-```bash
-cd headfwd-proxy
-npx wrangler login
-npx wrangler kv namespace create REGISTRY
-# Update wrangler.jsonc with KV ID
-npm run deploy
-```
-
-> **Note:** Tailscale TS2021 uses a custom HTTP Upgrade that Cloudflare Workers cannot proxy. Use Fly.io for full control-plane support.
 
 ### 2. Run Headscale + Sidecar
 
@@ -144,8 +131,7 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 ## Cost
 
 - **Fly.io:** a single shared-cpu-1x instance comfortably runs the proxy; fits within the free/low-cost tier for personal use
-- **Cloudflare Workers:** free tier covers 100+ Headscale instances; hibernating WebSockets mean you're only billed when a tunnel is active
-- Either way, the proxy only relays encrypted traffic — no per-GB data egress for the control plane
+- The proxy only relays encrypted control traffic — no per-GB data egress for the control plane
 
 ## Security Properties at a Glance
 
@@ -179,7 +165,7 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 
 ## Next Steps
 
-1. Deploy the proxy (Fly.io recommended, Cloudflare Workers for HTTP-only)
+1. Use the public `headfwd.net` proxy, or deploy your own on Fly.io
 2. Run Headscale + sidecar; the sidecar auto-registers with challenge-response auth
 3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net`
 4. Connect the iOS app (or any Tailscale client) via QR onboarding
@@ -195,4 +181,3 @@ Built by [@pastudan](https://github.com/pastudan) as a personal project, now mai
 - [Headscale](https://headscale.net/)
 - [Tailscale](https://tailscale.com/)
 - [Fly.io](https://fly.io/)
-- [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/)

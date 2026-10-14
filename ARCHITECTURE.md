@@ -9,10 +9,9 @@ Headscale (home) ──[WebSocket]──> HeadFwd Proxy <──[HTTP / TS2021]�
      (initiates)                  (holds tunnel)                  (requests)
 ```
 
-The proxy is a stateless relay keyed by the fingerprint subdomain. Two interchangeable backends exist:
+The proxy is a stateless relay keyed by the fingerprint subdomain. It lives in `headfwd-proxy/` (Go, deployed on Fly.io): a single process that holds tunnels in memory and can hijack Tailscale's custom TS2021 HTTP `Upgrade`, so it carries the full control plane.
 
-- **Fly.io** (`headfwd-proxy-fly/`, Go) — **recommended**. A single process that holds tunnels in memory and can hijack Tailscale's custom TS2021 HTTP `Upgrade`, so it carries the full control plane.
-- **Cloudflare Workers** (`headfwd-proxy/`, TypeScript) — HTTP-only. Uses one Durable Object per Headscale instance to hold the tunnel; cannot proxy the TS2021 upgrade.
+An earlier Cloudflare Workers + Durable Objects version is parked on the `cloudflare-proxy` branch until Workers can proxy TS2021's custom HTTP Upgrade.
 
 ## Why This Design?
 
@@ -39,7 +38,7 @@ for {
 }
 ```
 
-### 2. Proxy (Fly.io, Go — recommended)
+### 2. Proxy (Go, on Fly.io)
 A single process that keeps a tunnel per fingerprint and forwards both plain HTTP and hijacked TS2021 upgrade streams:
 
 ```go
@@ -51,15 +50,6 @@ tunnel.send(TunnelMessage{Type: "request", Data: mustMarshal(req)})
 
 // TS2021 Upgrade: hijack the client conn and relay raw bytes both ways
 conn, _, _ := hj.Hijack()
-```
-
-### 3. Proxy (Cloudflare Workers — HTTP-only alternative)
-Edge Worker routes by fingerprint to one Durable Object per Headscale instance, which holds the tunnel WebSocket:
-
-```typescript
-const fingerprint = extractFromSubdomain(url);
-const doId = env.TUNNELS.idFromName(fingerprint);
-return doStub.fetch(request); // DO holds the persistent tunnel
 ```
 
 ## Data Flow
@@ -77,13 +67,12 @@ return doStub.fetch(request); // DO holds the persistent tunnel
    └─> Sidecar receives, forwards to local Headscale
    └─> Response flows back
 
-3. Tunnel stays open (Cloudflare DOs hibernate when idle; Fly.io holds it in-process)
+3. Tunnel stays open (the proxy holds it in-process)
 ```
 
 ## Cost
 
 - **Fly.io:** a single shared-cpu-1x instance is plenty for personal use
-- **Cloudflare Workers:** free tier covers 100+ instances; hibernating WebSockets mean you only pay when a tunnel is active
 
 ## Security
 
@@ -101,5 +90,5 @@ return doStub.fetch(request); // DO holds the persistent tunnel
 | ngrok | Easy | ✅ Works | $8/mo per instance |
 | Cloudflare Tunnel | Medium | ✅ Works | Free (but locked in) |
 
-HeadFwd = ngrok simplicity + self-hosted control + Cloudflare scale
+HeadFwd = ngrok simplicity + self-hosted control + zero-knowledge relay
 

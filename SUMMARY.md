@@ -17,33 +17,29 @@ Home Headscale ──[WebSocket]──> HeadFwd Proxy <──[HTTP / TS2021]─�
 
 ## What You Have Now
 
-### 1. **headfwd-proxy-fly/** (Go — recommended)
+### 1. **headfwd-proxy/** (Go)
 Fly.io proxy
 - Routes `<fingerprint>.headfwd.net` to the correct Headscale
 - Holds one tunnel per fingerprint in memory
 - Hijacks Tailscale's TS2021 HTTP `Upgrade` → full control-plane support
 
-### 2. **headfwd-proxy/** (TypeScript — HTTP-only alternative)
-Cloudflare Workers + Durable Objects
-- One Durable Object per Headscale (holds persistent tunnel)
-- Hibernating WebSockets (cost-effective)
-- Cannot proxy the TS2021 upgrade
+The earlier Cloudflare Workers version is parked on the `cloudflare-proxy` branch until Workers can proxy TS2021's custom HTTP Upgrade.
 
-### 3. **headfwd-sidecar/** (Go)
+### 2. **headfwd-sidecar/** (Go)
 Runs alongside Headscale
 - Auto-registers with the proxy (X25519 ECDH + HMAC-SHA256)
 - Opens the WebSocket tunnel and forwards client requests to local Headscale
 - Embedded admin portal (React) for user management and device onboarding
 - Auto-reconnects on disconnect
 
-### 4. **ios/** (SwiftUI)
+### 3. **ios/** (SwiftUI)
 - Connects via tsnet (embedded, patched `libtailscale`)
 - QR onboarding + Noise-key verification and pinning
 
 ## Key Decisions Made
 
 ✅ **Reverse tunnel** (not direct proxy) - NAT traversal  
-✅ **Fly.io primary** - Supports TS2021; Cloudflare kept as HTTP-only fallback  
+✅ **Fly.io proxy** - Supports TS2021; the HTTP-only Cloudflare version is parked on a branch  
 ✅ **Sidecar pattern** - No Headscale modifications  
 ✅ **X25519 ECDH + HMAC-SHA256** - Reuses the Noise key; no new secrets  
 ✅ **Proven reverse-tunnel approach** - Same pattern as ngrok/Cloudflare Tunnel
@@ -51,7 +47,6 @@ Runs alongside Headscale
 ## Cost
 
 - **Fly.io:** a single shared-cpu-1x instance is plenty for personal use
-- **Cloudflare Workers:** free tier covers 100+ instances; hibernating WebSockets mean you only pay when a tunnel is active
 
 ## What's Next
 
@@ -74,8 +69,7 @@ headfwd/
 ├── SUMMARY.md                   This file
 ├── docker-compose.yml           Headscale + sidecar
 ├── headscale/config/config.yaml Headscale config
-├── headfwd-proxy-fly/           Fly.io proxy (Go, recommended)
-├── headfwd-proxy/               Cloudflare Workers proxy (HTTP-only)
+├── headfwd-proxy/               Fly.io proxy (Go)
 ├── headfwd-sidecar/             Go tunnel client + embedded portal
 └── ios/                         SwiftUI app (tsnet via libtailscale)
 ```
@@ -86,7 +80,7 @@ headfwd/
 1. Sidecar auto-registers, then opens a WebSocket to the proxy
 2. Proxy stores the connection keyed by fingerprint
 3. Client requests route to the correct tunnel
-4. Proxy forwards through the tunnel (including hijacked TS2021 streams on Fly.io)
+4. Proxy forwards through the tunnel (including hijacked TS2021 streams)
 5. Sidecar proxies to local Headscale
 6. Response flows back
 
