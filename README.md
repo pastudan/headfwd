@@ -1,6 +1,6 @@
 # HeadFwd
 
-A universal access pattern for any self-hosted app
+A design pattern for remote access to self-hosted apps at home.
 
 ## What is this?
 
