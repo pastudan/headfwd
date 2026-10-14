@@ -182,5 +182,5 @@ If that's you, please [reach out to me](https://github.com/pastudan) and I'll ad
 ## References
 
 - [Headscale](https://headscale.net/)
-- [Tailscale](https://github.com/tailscale/libtailscale)
+- [libtailscale](https://github.com/tailscale/libtailscale)
 - [Fly.io](https://fly.io/)
