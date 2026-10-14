@@ -2,7 +2,7 @@
 
 A secure design pattern for reaching self-hosted apps at home.
 
-## What Is This?
+## What is this?
 
 HeadFwd lets you access your self-hosted apps from anywhere using [Headscale](https://github.com/juanfont/headscale) (self-hosted Tailscale), even if your server is behind NAT/firewall.
 
@@ -21,8 +21,8 @@ HeadFwd lets you access your self-hosted apps from anywhere using [Headscale](ht
 </picture>
 
 1. The sidecar dials out and keeps a persistent WSS tunnel open to the proxy, so no inbound ports are needed.
-2. Clients open a websocket tunnel to `https://<fingerprint>.headfwd.net`, and the proxy forwards it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only your Headscale instance at home can read it. The client was given the Headscale's pubkey when it first scanned a QR code to access your app.
-3. Devices then talk to your app directly over a secure direct WireGuard channel.
+2. Clients open a websocket tunnel to `https://<fingerprint>.headfwd.net`, and the proxy forwards it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol messages, which are Noise-encrypted end to end, so only your Headscale instance at home can read it. The client app was given the Headscale's `<fingerprint>` when it first scanned a QR code to access your self-hosted app.
+3. Devices then talk directly over a secure direct WireGuard channel.
 
 You now have the best of both worlds; a secure, fully local control plane AND remote access.
 
@@ -35,7 +35,7 @@ The proxy is a stateless relay and only routes to your Headscale based on your p
 Pretend you've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
 
 * **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS (e.g. Cloudflare Tunnels), can see your video. It also adds latency and has to carry the bandwidth.
-* **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
+* **Port forwarding.** Every open port is reachable by the whole internet, and a router or dynamic IP change quietly breaks it.
 * **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
 
 With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone scans a QR code to join your own tailnet via that tunnel, and the proxy relays only control traffic which it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever see your footage.
@@ -44,7 +44,7 @@ With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either a
 
 * **`headfwd-sidecar/`** - Go sidecar that runs with Headscale: opens the tunnel, auto-registers, and serves an optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
 * **`headfwd-proxy/`** - Go proxy, deployed on Fly.io (full TS2021 control-plane support). Note: A Cloudflare Workers version is parked on the [`cloudflare-proxy`](https://github.com/pastudan/headfwd/tree/cloudflare-proxy) branch until Workers can proxy TS2021's custom HTTP Upgrade.
-* **`ios/`** - SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
+* **`ios/`** - An example SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
 * **`docs/REGISTRATION.md`** - Sidecar↔proxy registration protocol (X25519 ECDH + HMAC-SHA256 challenge-response)
 * **`docs/ios-key-verification.md`** - iOS key verification & pinning (preauth-key theft protection)
 
@@ -159,16 +159,17 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 
 ## Next Steps
 
+1. Point Claude at this repo and say "integrate it"
+
+Or, if you prefer the human route:
 1. Use the public `headfwd.net` proxy, or deploy your own on Fly.io
 2. Run Headscale + sidecar; the sidecar auto-registers with challenge-response auth
 3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net`
-4. Connect the iOS app (or any Tailscale client) via QR onboarding
+4. Build and connect the iOS app (or any Tailscale client) via QR onboarding
 
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
-Built by [@pastudan](https://github.com/pastudan) as a personal project, now maintained by Bridge.
 
 ## Wanted: a second public proxy
 
@@ -181,5 +182,5 @@ If that's you, please [reach out to me](https://github.com/pastudan) and I'll ad
 ## References
 
 - [Headscale](https://headscale.net/)
-- [Tailscale](https://tailscale.com/)
+- [Tailscale](https://github.com/tailscale/libtailscale)
 - [Fly.io](https://fly.io/)
