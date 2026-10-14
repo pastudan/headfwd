@@ -20,35 +20,33 @@ HeadFwd lets you access your self-hosted apps from anywhere using [Headscale](ht
   <img alt="HeadFwd architecture: Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a WSS tunnel to the untrusted HeadFwd proxy; clients open their own WSS tunnel to the proxy, which splices it into the sidecar's tunnel. The control traffic inside is Noise-encrypted end to end so only Headscale can read it, and devices then reach your app over a secure direct WireGuard channel." src="docs/images/architecture-default-light.svg" width="960">
 </picture>
 
-You now have the best of both worlds; a secure, fully local control plane AND remote access.
-
 1. The sidecar dials out and keeps a persistent WSS tunnel open to the proxy, so no inbound ports are needed.
-2. Clients open a WSS tunnel to `https://<fingerprint>.headfwd.net`, and the proxy forwards it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only your Headscale instance at home can read it. The client was given the Headscale's pubkey when it first scanned a QR code to access your app.
+2. Clients open a websocket tunnel to `https://<fingerprint>.headfwd.net`, and the proxy forwards it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only your Headscale instance at home can read it. The client was given the Headscale's pubkey when it first scanned a QR code to access your app.
 3. Devices then talk to your app directly over a secure direct WireGuard channel.
 
-Headscale, the sidecar and your app don't have to be separate services: they can ship together as a single app.
+You now have the best of both worlds; a secure, fully local control plane AND remote access.
 
-The proxy is a stateless relay and only forwards to your Headscale based on your public fingerprint (the subdomain in `<fingerprint>.headfwd.net`). It never sees your keys or plaintext.
+The proxy is a stateless relay and only routes to your Headscale based on your public fingerprint (the subdomain in `<fingerprint>.headfwd.net`). It never sees your keys or plaintext. Even if a rogue relay forwards to the wrong Headscale instance, your clients will reject it since they pin the fingerprint.
 
-I've been using this for my apps for 6 months now, and it's been working super reliably. Since hosting a control plane proxy costs next to nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use for at least the next 5 years.
+> Personal note: I've been using this in my apps for ~6 months now, and it's been working super reliably. Since hosting a control plane proxy carries no data, and costs virtually nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use in their apps for **at least** the next 5 years. I've got experience running systems at scale, and I can fight the abuse it receives. That said, feel free to run your own proxy or only use me as backup.
 
 ## Example: Frigate cameras
 
-You've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
+Pretend you've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
 
-* **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video. It also adds latency and has to carry a lot of bandwidth.
+* **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS (e.g. Cloudflare Tunnels), can see your video. It also adds latency and has to carry the bandwidth.
 * **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
 * **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
 
-With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone scans a QR code to join your own tailnet via that tunnel, and the proxy only relays control traffic it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever read your footage.
+With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone scans a QR code to join your own tailnet via that tunnel, and the proxy relays only control traffic which it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever see your footage.
 
 ## Components
 
-- **`headfwd-proxy/`** - Go proxy, deployed on Fly.io (full TS2021 control-plane support). A Cloudflare Workers version is parked on the [`cloudflare-proxy`](https://github.com/pastudan/headfwd/tree/cloudflare-proxy) branch until Workers can proxy TS2021's custom HTTP Upgrade.
-- **`headfwd-sidecar/`** - Go sidecar that runs with Headscale: opens the tunnel, auto-registers, and serves an optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
-- **`ios/`** - SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
-- **`docs/REGISTRATION.md`** - Sidecar↔proxy registration protocol (X25519 ECDH + HMAC-SHA256 challenge-response)
-- **`docs/ios-key-verification.md`** - iOS key verification & pinning (preauth-key theft protection)
+* **`headfwd-sidecar/`** - Go sidecar that runs with Headscale: opens the tunnel, auto-registers, and serves an optional admin portal (embedded React UI for user management, device onboarding, connectivity proof)
+* **`headfwd-proxy/`** - Go proxy, deployed on Fly.io (full TS2021 control-plane support). Note: A Cloudflare Workers version is parked on the [`cloudflare-proxy`](https://github.com/pastudan/headfwd/tree/cloudflare-proxy) branch until Workers can proxy TS2021's custom HTTP Upgrade.
+* **`ios/`** - SwiftUI iOS app that connects via tsnet (embedded `libtailscale`), with QR onboarding and Noise-key verification/pinning
+* **`docs/REGISTRATION.md`** - Sidecar↔proxy registration protocol (X25519 ECDH + HMAC-SHA256 challenge-response)
+* **`docs/ios-key-verification.md`** - iOS key verification & pinning (preauth-key theft protection)
 
 ## Security
 
@@ -121,17 +119,21 @@ RESPONSE=$(curl -s -X POST https://headfwd.net/api/register/init \
 
 ```yaml
 # headscale/config/config.yaml
-server_url: https://abc123...xyz.headfwd.net
+server_url: https://abc123.headfwd.net
 ```
 
 ### 4. Connect Clients
 
-Clients connect to `https://abc123.headfwd.net` instead of direct IP.
+Clients scan a local QR code, connect to `https://abc123.headfwd.net` instead of direct IP.
 
 ## Cost
 
-- **Fly.io:** a single shared-cpu-1x instance comfortably runs the proxy; fits within the free/low-cost tier for personal use
-- The proxy only relays encrypted control traffic — no per-GB data egress for the control plane
+**To run your own proxy**, for yourself or for your users:
+* [Fly.io](https://fly.io/): a single shared-cpu-1x instance comfortably runs the proxy; fits within the free/low-cost tier for personal use
+* The proxy only relays encrypted control traffic — no per-GB data egress for the control plane
+
+If you want to use my public `headfwd.net` relay:
+* Nothing. I'll keep this online and free as long as I am alive.
 
 ## Security Properties at a Glance
 
@@ -146,14 +148,6 @@ Clients connect to `https://abc123.headfwd.net` instead of direct IP.
 
 For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATION.md).
 
-## vs Alternatives
-
-| Solution          | NAT | Setup   | Cost             |
-| ----------------- | --- | ------- | ---------------- |
-| **HeadFwd**       | ✅  | QR code | Free-$10/mo      |
-| Port forward      | ❌  | Complex | $0               |
-| ngrok             | ✅  | Easy    | $8/mo each       |
-| Cloudflare Tunnel | ✅  | Medium  | Free (locked in) |
 
 ## Documentation
 
