@@ -1,43 +1,45 @@
 # HeadFwd
 
-Zero-knowledge remote access. You own the keys, you own the network.
+A secure design pattern for reaching self-hosted apps at home.
 
 ## What Is This?
 
 HeadFwd lets you access your self-hosted apps from anywhere using Headscale (self-hosted Tailscale), even if your server is behind NAT/firewall.
 
-**Problem:** Headscale at home → can't accept inbound connections. Maintaining DDNS and port forwarding sucks.
-**Solution:** Zero-knowledge reverse tunnel (like ngrok, but the proxy can't see your keys or data)
+**Problem:** Setting up remote access for a self-hosted app sucks. Typically, you:
+1. Set up port forwarding so you can get to your app
+2. Set up DDNS so you can always reach it
+3. Set up an auth layer so no bad actors get in / see your data
 
-You now have the best of both worlds; a secure, local control plane AND remote access.
+**Solution:** A zero-knowledge reverse tunnel. It's like ngrok, but the proxy can't see your keys or data
 
 ## Architecture
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-default-dark.svg">
   <img alt="HeadFwd architecture: Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a WSS tunnel to the untrusted HeadFwd proxy; clients open their own WSS tunnel to the proxy, which splices it into the sidecar's tunnel. The control traffic inside is Noise-encrypted end to end so only Headscale can read it, and devices then reach your app over a secure direct WireGuard channel." src="docs/images/architecture-default-light.svg" width="960">
-</picture>
+</picture>\
+You now have the best of both worlds; a secure, fully local control plane AND remote access.
 
 1. The sidecar dials out and keeps a persistent WSS tunnel open to the proxy, so no inbound ports are needed.
-2. Clients open a WSS tunnel to `https://<fingerprint>.headfwd.net`, and the proxy splices it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only Headscale can read it.
-3. Devices then talk to your app over a secure direct WireGuard channel.
+2. Clients open a WSS tunnel to `https://<fingerprint>.headfwd.net`, and the proxy forwards it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only your Headscale instance at home can read it. The client was given the Headscale's pubkey when it first scanned a QR code to access your app.
+3. Devices then talk to your app directly over a secure direct WireGuard channel.
 
 Headscale, the sidecar and your app don't have to be separate services: they can ship together as a single app.
 
-The proxy is a stateless relay identified only by the fingerprint subdomain; it never sees your keys or plaintext. Two interchangeable backends are provided:
+The proxy is a stateless relay and only forwards to your Headscale based on your your public fingerprint (the subdomain in \`\<fingerprint>.headfwd.net\`. It never sees your keys or plaintext.
 
-- **Fly.io** (`headfwd-proxy-fly/`, Go) — **recommended**; supports Tailscale's custom TS2021 HTTP `Upgrade`, so it can carry the full control plane.
-- **Cloudflare Workers** (`headfwd-proxy/`, TypeScript + Durable Objects) — HTTP-only; convenient and cheap, but cannot proxy the TS2021 upgrade.
+I've been using this for my apps for 6 months now, and its been working super reliably. Since hosting a control plane proxy costs next to nothing, I am committing to running `headfwd.net` as a public proxy for anyone to use for at least the next 5 years.
 
 ## Example: Frigate cameras
 
 You've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
 
-- **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video.
-- **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
-- **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
+* **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video. It also adds latency and has to carry a lot of bandwidth
+* **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
+* **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
 
-With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone joins your own tailnet through that tunnel, and the proxy only relays control traffic it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever read your footage.
+With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone scans a QR code to join your own tailnet via that tunnel, and the proxy only relays control traffic it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever read your footage.
 
 ## Components
 
