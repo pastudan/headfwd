@@ -13,31 +13,31 @@ You now have the best of both worlds; a secure, local control plane AND remote a
 
 ## Architecture
 
-```
-┌─────────────────┐        Persistent WebSocket tunnel        ┌──────────────────┐
-│   Headscale     │══════════════════════════════════════════>│   HeadFwd Proxy  │
-│   + sidecar     │  1. Sidecar dials out on startup          │  (Fly.io or CF)  │
-│  (behind NAT)   │     wss://<fp>.headfwd.net/tunnel         │                  │
-└─────────────────┘                                           └──────────────────┘
-                                                                       ▲
-                                                          2. Client    │ HTTPS /
-                                                             requests  │ TS2021 upgrade
-                                                                       ▼
-                                                              ┌─────────────────┐
-                                                              │  Client (iOS)   │
-                                                              │  tsnet / WebUI  │
-                                                              └─────────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-default-dark.svg">
+  <img alt="HeadFwd architecture: Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a WSS tunnel to the untrusted HeadFwd proxy; clients open their own WSS tunnel to the proxy, which splices it into the sidecar's tunnel. The control traffic inside is Noise-encrypted end to end so only Headscale can read it, and devices then reach your app over a secure direct WireGuard channel." src="docs/images/architecture-default-light.svg" width="960">
+</picture>
 
-1. The Headscale sidecar dials out and opens a persistent WebSocket tunnel to the proxy (no inbound ports needed)
-2. Clients make requests to `https://<fingerprint>.headfwd.net`
-3. The proxy forwards HTTP requests — and hijacks Tailscale's TS2021 HTTP `Upgrade` — back through the tunnel to Headscale
-4. WireGuard mesh is established, then traffic goes direct P2P where possible
+1. The sidecar dials out and keeps a persistent WSS tunnel open to the proxy, so no inbound ports are needed.
+2. Clients open a WSS tunnel to `https://<fingerprint>.headfwd.net`, and the proxy splices it into the sidecar's tunnel. This carries Tailscale's TS2021 control protocol, which is Noise-encrypted end to end, so only Headscale can read it.
+3. Devices then talk to your app over a secure direct WireGuard channel.
+
+Headscale, the sidecar and your app don't have to be separate services: they can ship together as a single app.
 
 The proxy is a stateless relay identified only by the fingerprint subdomain; it never sees your keys or plaintext. Two interchangeable backends are provided:
 
 - **Fly.io** (`headfwd-proxy-fly/`, Go) — **recommended**; supports Tailscale's custom TS2021 HTTP `Upgrade`, so it can carry the full control plane.
 - **Cloudflare Workers** (`headfwd-proxy/`, TypeScript + Durable Objects) — HTTP-only; convenient and cheap, but cannot proxy the TS2021 upgrade.
+
+## Example: Frigate cameras
+
+You've set up cameras at home with [Frigate](https://frigate.video/), and you want to check them from your phone while you're out. What you don't want:
+
+- **Footage passing through a middle party.** A cloud camera service, or a relay that terminates TLS, can see your video.
+- **Port forwarding.** Every open port is reachable by the whole internet, and a router or ISP change quietly breaks it.
+- **A public login page** in front of Frigate, or a reverse proxy with external auth. That puts an attack surface on the internet, and it has to be patched and kept working forever.
+
+With HeadFwd, Headscale and the sidecar run on the same box as Frigate, either alongside it or built into a single app. Nothing listens on a public port: the sidecar dials out to the proxy. Your phone joins your own tailnet through that tunnel, and the proxy only relays control traffic it cannot decrypt. Video then travels over WireGuard, encrypted end to end between your phone and Frigate, so no middle party can ever read your footage.
 
 ## Components
 

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 24 960 480" width="960" height="480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-default-dark-title architecture-default-dark-desc" id="architecture-default-dark-root">
+      <title id="architecture-default-dark-title">HeadFwd architecture</title>
+      <desc id="architecture-default-dark-desc">Headscale, the HeadFwd sidecar and your app run behind NAT and can ship as a single app. The sidecar dials out a persistent WSS tunnel to an untrusted HeadFwd proxy. Clients open their own WSS tunnel to the proxy at their fingerprint subdomain, and the proxy splices it into the sidecar's tunnel; the control traffic inside is Noise-encrypted end to end, so only Headscale can read it. Devices then reach your app over a secure direct WireGuard channel.</desc>
+      <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #architecture-default-dark-root { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif; color: #f5f5f5; }
+      #architecture-default-dark-root .diagram-container { width: 100%; overflow-x: auto; }</style>
+      <marker id="architecture-default-dark-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto-start-reverse"><polygon points="0 0, 8 3, 0 6" fill="#bfc0c0"/></marker>
+      <marker id="architecture-default-dark-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto-start-reverse"><polygon points="0 0, 8 3, 0 6" fill="#f08a59"/></marker>
+      <marker id="architecture-default-dark-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto-start-reverse"><polygon points="0 0, 8 3, 0 6" fill="#739fdf"/></marker>
+      <marker id="architecture-default-dark-arrow-ink" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto-start-reverse"><polygon points="0 0, 8 3, 0 6" fill="#f5f5f5"/></marker>
+      </defs>
+      <rect x="0" y="24" width="960" height="480" fill="#2d3142"/>
+      <rect x="40" y="64" width="304" height="352" rx="8" fill="#f5f5f5" stroke="#f5f5f5" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.14"/>
+      <rect x="56" y="68" width="152" height="12" rx="2" fill="#2d3142"/>
+      <text x="132" y="77" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.14em">YOUR NETWORK · BEHIND NAT</text>
+      <rect x="424" y="168" width="208" height="144" rx="8" fill="#f5f5f5" stroke="#f5f5f5" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.14"/>
+      <rect x="440" y="172" width="100" height="12" rx="2" fill="#2d3142"/>
+      <text x="490" y="181" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.14em">UNTRUSTED RELAY</text>
+      <rect x="712" y="176" width="208" height="128" rx="8" fill="#f5f5f5" stroke="#f5f5f5" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.14"/>
+      <rect x="728" y="180" width="60" height="12" rx="2" fill="#2d3142"/>
+      <text x="758" y="189" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.14em">ANYWHERE</text>
+      <rect x="72" y="86" width="240" height="312" rx="6" fill="none" stroke="#f5f5f5" stroke-width="0.8" stroke-dasharray="4,3" stroke-opacity="0.28"/>
+      <rect x="88" y="392" width="120" height="12" rx="2" fill="#2d3142"/>
+      <text x="148" y="401" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.14em">CAN SHIP AS ONE APP</text>
+      <line x1="298" y1="240" x2="446" y2="240" stroke="#f08a59" stroke-width="1.6" marker-end="url(#architecture-default-dark-arrow-accent)"/>
+      <line x1="734" y1="240" x2="610" y2="240" stroke="#739fdf" stroke-width="1.2" marker-end="url(#architecture-default-dark-arrow-link)"/>
+      <line x1="192" y1="208" x2="192" y2="162" stroke="#bfc0c0" stroke-width="1.2" marker-end="url(#architecture-default-dark-arrow)"/>
+      <path d="M 816,274 V 344 Q 816,352 808,352 H 298" fill="none" stroke="#f5f5f5" stroke-width="1.2" marker-start="url(#architecture-default-dark-arrow-ink)" marker-end="url(#architecture-default-dark-arrow-ink)"/>
+      <rect x="338" y="220" width="68" height="12" rx="2" fill="#2d3142"/>
+      <text x="372" y="229" fill="#f08a59" font-size="8" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">WSS TUNNEL</text>
+      <circle cx="328" cy="226" r="7" fill="#2d3142" stroke="#f08a59" stroke-width="1"/>
+      <text x="328" y="229" fill="#f08a59" font-size="8" font-weight="600" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">1</text>
+      <rect x="650" y="220" width="68" height="12" rx="2" fill="#2d3142"/>
+      <text x="684" y="229" fill="#739fdf" font-size="8" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">WSS TUNNEL</text>
+      <circle cx="640" cy="226" r="7" fill="#2d3142" stroke="#739fdf" stroke-width="1"/>
+      <text x="640" y="229" fill="#739fdf" font-size="8" font-weight="600" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">2</text>
+      <rect x="200" y="178" width="40" height="12" rx="2" fill="#2d3142"/>
+      <text x="220" y="187" fill="#bfc0c0" font-size="8" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">LOCAL</text>
+      <rect x="474" y="332" width="172" height="12" rx="2" fill="#2d3142"/>
+      <text x="560" y="341" fill="#f5f5f5" font-size="8" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">DIRECT CHANNEL VIA WIREGUARD</text>
+      <circle cx="464" cy="338" r="7" fill="#2d3142" stroke="#f5f5f5" stroke-width="1"/>
+      <text x="464" y="341" fill="#f5f5f5" font-size="8" font-weight="600" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">3</text>
+      <rect x="88" y="96" width="208" height="64" rx="6" fill="#2d3142"/>
+      <rect x="88" y="96" width="208" height="64" rx="6" fill="#393e53" stroke="#f5f5f5" stroke-width="1"/>
+      <rect x="96" y="104" width="32" height="12" rx="2" fill="none" stroke="#f5f5f5" stroke-width="0.8" stroke-opacity="0.3"/>
+      <text x="112" y="113" fill="#f5f5f5" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.08em">CTRL</text>
+      <text x="192" y="130" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">Headscale</text>
+      <text x="192" y="146" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">control plane</text>
+      <rect x="88" y="208" width="208" height="64" rx="6" fill="#2d3142"/>
+      <rect x="88" y="208" width="208" height="64" rx="6" fill="#f08a59" stroke="#f08a59" stroke-width="1" fill-opacity="0.09"/>
+      <rect x="96" y="216" width="48" height="12" rx="2" fill="none" stroke="#f08a59" stroke-width="0.8" stroke-opacity="0.5"/>
+      <text x="120" y="225" fill="#f08a59" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.08em">SIDECAR</text>
+      <text x="192" y="242" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">HeadFwd sidecar</text>
+      <text x="192" y="258" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">headfwd-sidecar</text>
+      <rect x="88" y="320" width="208" height="64" rx="6" fill="#2d3142"/>
+      <rect x="88" y="320" width="208" height="64" rx="6" fill="#393e53" stroke="#f5f5f5" stroke-width="1"/>
+      <rect x="96" y="328" width="28" height="12" rx="2" fill="none" stroke="#f5f5f5" stroke-width="0.8" stroke-opacity="0.3"/>
+      <text x="110" y="337" fill="#f5f5f5" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.08em">APP</text>
+      <text x="192" y="354" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">Your app</text>
+      <text x="192" y="370" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">e.g. Frigate · Immich</text>
+      <rect x="448" y="200" width="160" height="80" rx="6" fill="#2d3142"/>
+      <rect x="448" y="200" width="160" height="80" rx="6" fill="#f5f5f5" stroke="#f5f5f5" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.34"/>
+      <rect x="456" y="208" width="36" height="12" rx="2" fill="none" stroke="#f5f5f5" stroke-width="0.8" stroke-opacity="0.3"/>
+      <text x="474" y="217" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.08em">PROXY</text>
+      <text x="528" y="234" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">HeadFwd proxy</text>
+      <text x="528" y="250" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">&lt;fingerprint&gt;.headfwd.net</text>
+      <text x="528" y="263" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">Fly.io · CF Workers</text>
+      <rect x="736" y="208" width="160" height="64" rx="6" fill="#2d3142"/>
+      <rect x="736" y="208" width="160" height="64" rx="6" fill="#bfc0c0" stroke="#949eb2" stroke-width="1" fill-opacity="0.1"/>
+      <rect x="744" y="216" width="40" height="12" rx="2" fill="none" stroke="#f5f5f5" stroke-width="0.8" stroke-opacity="0.3"/>
+      <text x="764" y="225" fill="#949eb2" font-size="7" font-weight="500" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.08em">CLIENT</text>
+      <text x="816" y="242" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">Client</text>
+      <text x="816" y="258" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">iOS app · web UI</text>
+      <line x1="40" y1="440" x2="920" y2="440" stroke="#f5f5f5" stroke-width="0.8" stroke-opacity="0.12"/>
+      <text x="40" y="462" fill="#bfc0c0" font-size="8" font-family="'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="0.18em">LEGEND</text>
+      <rect x="112" y="456" width="14" height="10" rx="2" fill="#f08a59" stroke="#f08a59" stroke-width="1" fill-opacity="0.09"/>
+      <text x="132" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">HeadFwd sidecar</text>
+      <rect x="228" y="456" width="14" height="10" rx="2" fill="#393e53" stroke="#f5f5f5" stroke-width="1"/>
+      <text x="248" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">Self-hosted</text>
+      <rect x="324" y="456" width="14" height="10" rx="2" fill="#f5f5f5" stroke="#f5f5f5" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.34"/>
+      <text x="344" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">Untrusted relay</text>
+      <line x1="442" y1="461" x2="466" y2="461" stroke="#f08a59" stroke-width="1.2" marker-end="url(#architecture-default-dark-arrow-accent)"/>
+      <text x="474" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">Outbound tunnel</text>
+      <line x1="572" y1="461" x2="596" y2="461" stroke="#739fdf" stroke-width="1.2" marker-end="url(#architecture-default-dark-arrow-link)"/>
+      <text x="604" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">Client tunnel · Noise E2E</text>
+      <line x1="750" y1="461" x2="774" y2="461" stroke="#f5f5f5" stroke-width="1.2" marker-start="url(#architecture-default-dark-arrow-ink)" marker-end="url(#architecture-default-dark-arrow-ink)"/>
+      <text x="782" y="464.5" fill="#bfc0c0" font-size="8.5" font-family="'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif">Direct WireGuard</text>
+    </svg>
