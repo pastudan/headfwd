@@ -13,6 +13,11 @@ pass() { echo -e "${GREEN}PASS${NC} $*"; }
 fail() { echo -e "${RED}FAIL${NC} $*"; }
 info() { echo -e "${YELLOW}INFO${NC} $*"; }
 
+# Public base domain the proxy serves <fingerprint>.<domain> on. Set this when
+# testing against a self-hosted proxy (must match the sidecar's PROXY_DOMAIN /
+# --proxy host and the proxy's PUBLIC_HOST).
+PROXY_DOMAIN="${PROXY_DOMAIN:-headfwd.net}"
+
 echo "Choose mode:"
 echo "1) Full wipe (delete ./headscale/data)"
 echo "2) Reset only (keep data)"
@@ -90,17 +95,17 @@ if [[ "$CONNECTED" != "true" ]]; then
 fi
 
 info "Testing forwarded endpoints..."
-HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${FINGERPRINT}.headfwd.net/health" || true)"
-KEY_FORWARD="$(curl -s "https://${FINGERPRINT}.headfwd.net/key?v=96" || true)"
+HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${FINGERPRINT}.${PROXY_DOMAIN}/health" || true)"
+KEY_FORWARD="$(curl -s "https://${FINGERPRINT}.${PROXY_DOMAIN}/key?v=96" || true)"
 FORWARD_PUBKEY="$(printf '%s' "$KEY_FORWARD" | jq -r '.publicKey // empty' 2>/dev/null || true)"
 
 echo "Forwarded /health status: $HEALTH_CODE"
 echo "Forwarded /key?v=96: $KEY_FORWARD"
 
 if [[ "$HEALTH_CODE" == "200" ]]; then
-  pass "/health reachable at https://${FINGERPRINT}.headfwd.net/health"
+  pass "/health reachable at https://${FINGERPRINT}.${PROXY_DOMAIN}/health"
 else
-  fail "/health failed (HTTP $HEALTH_CODE) at https://${FINGERPRINT}.headfwd.net/health"
+  fail "/health failed (HTTP $HEALTH_CODE) at https://${FINGERPRINT}.${PROXY_DOMAIN}/health"
   exit 1
 fi
 
@@ -111,7 +116,7 @@ else
   exit 1
 fi
 
-pass "Fingerprint URL validated: https://${FINGERPRINT}.headfwd.net"
+pass "Fingerprint URL validated: https://${FINGERPRINT}.${PROXY_DOMAIN}"
 echo "Done."
 
 echo

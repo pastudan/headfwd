@@ -30,9 +30,10 @@ import (
 
 // Configuration
 var (
-	tunnelURL          = flag.String("tunnel", "", "Tunnel WebSocket URL (wss://abc123.headfwd.net/tunnel?auth=secret)")
+	tunnelURL          = flag.String("tunnel", "", "Tunnel WebSocket URL (wss://<fingerprint>.<proxy-domain>/tunnel?auth=secret)")
 	headscaleURL       = flag.String("headscale", "http://headscale:8080", "Local Headscale URL")
-	proxyURL           = flag.String("proxy", "https://headfwd.net", "Proxy URL for registration")
+	proxyURL           = flag.String("proxy", defaultProxyURL, "Proxy URL for registration; its host is also the public base domain unless --proxy-domain is set")
+	proxyDomain        = flag.String("proxy-domain", "", "Public base domain the proxy serves <fingerprint>.<domain> on (default: host of --proxy). Derived locally; never taken from the proxy")
 	noiseKeyPath       = flag.String("noise-key", "", "Path to Noise private key (default: auto-detect from Headscale)")
 	autoRegister       = flag.Bool("register", true, "Auto-register with proxy using challenge-response")
 	configPath         = flag.String("config", "/config/config.yaml", "Headscale config path for server_url updates")
@@ -132,9 +133,14 @@ func main() {
 			tunnelURL = &v
 		}
 	}
-	if *proxyURL == "https://headfwd.net" {
+	if *proxyURL == defaultProxyURL {
 		if v, ok := os.LookupEnv("PROXY_URL"); ok && v != "" {
 			proxyURL = &v
+		}
+	}
+	if *proxyDomain == "" {
+		if v, ok := os.LookupEnv("PROXY_DOMAIN"); ok && v != "" {
+			proxyDomain = &v
 		}
 	}
 	if *headscaleURL == "http://headscale:8080" {
@@ -198,7 +204,16 @@ func main() {
 	var portalPublicURL string
 	if *autoRegister {
 		log.Printf("Auto-registering with proxy...")
-		result, err := registerWithProxy(*proxyURL, *headscaleURL, *noiseKeyPath)
+		var result RegistrationResult
+		baseDomain, err := resolveProxyDomain(*proxyURL, *proxyDomain)
+		if err == nil {
+			source := "--proxy"
+			if *proxyDomain != "" {
+				source = "--proxy-domain"
+			}
+			log.Printf("Proxy: %s  public domain: %s (from %s)", *proxyURL, baseDomain, source)
+			result, err = registerWithProxy(*proxyURL, baseDomain, *headscaleURL, *noiseKeyPath)
+		}
 		if err != nil {
 			if devMode {
 				log.Printf("Registration failed (non-fatal in dev mode): %v", err)
@@ -207,7 +222,7 @@ func main() {
 			}
 		} else {
 			tunnelURL = &result.TunnelURL
-			portalPublicURL = publicURLFromFingerprint(result.Fingerprint)
+			portalPublicURL = result.PublicURL // derived locally, not from the proxy
 			log.Printf("✓ Registration successful")
 
 			if *updateConfig {
@@ -373,13 +388,6 @@ func runTunnel() error {
 	}
 }
 
-func publicURLFromFingerprint(fingerprint string) string {
-	if fingerprint == "" {
-		return ""
-	}
-	return "https://" + fingerprint + ".headfwd.net"
-}
-
 func updateServerURL(path, publicURL string, force bool) (bool, error) {
 	if publicURL == "" {
 		return false, fmt.Errorf("missing public URL")
@@ -398,10 +406,11 @@ func updateServerURL(path, publicURL string, force bool) (bool, error) {
 		if strings.HasPrefix(trim, "server_url:") {
 			found = true
 			current := strings.TrimSpace(strings.TrimPrefix(trim, "server_url:"))
-			if !force && !isDefaultServerURL(current) {
-				if !shouldUpdateHeadfwdURL(current, publicURL) {
-					return false, fmt.Errorf("server_url already set (%s)", current)
-				}
+			if strings.EqualFold(current, publicURL) {
+				return false, nil
+			}
+			if !force && !isDefaultServerURL(current) && !isHeadfwdServerURL(current) {
+				return false, fmt.Errorf("server_url already set (%s)", current)
 			}
 			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 			lines[i] = fmt.Sprintf("%sserver_url: %s", indent, publicURL)
@@ -432,13 +441,6 @@ func isDefaultServerURL(value string) bool {
 	default:
 		return false
 	}
-}
-
-func shouldUpdateHeadfwdURL(current, desired string) bool {
-	if !strings.HasSuffix(strings.ToLower(current), ".headfwd.net") {
-		return false
-	}
-	return strings.ToLower(current) != strings.ToLower(desired)
 }
 
 func computeFingerprint(pubkey string) string {
@@ -991,8 +993,17 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// registerWithProxy performs X25519 ECDH + HMAC-SHA256 challenge-response registration
-func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (RegistrationResult, error) {
+// registerWithProxy performs X25519 ECDH + HMAC-SHA256 challenge-response registration.
+//
+// baseDomain is the locally configured public base domain (see
+// resolveProxyDomain). proxyURL is only where registration requests are sent;
+// the URLs the proxy returns are verified against <localFingerprint>.<baseDomain>.
+func registerWithProxy(proxyURL, baseDomain, headscaleURL, noiseKeyPath string) (RegistrationResult, error) {
+	if baseDomain == "" {
+		return RegistrationResult{}, fmt.Errorf("no public base domain configured")
+	}
+	proxyURL = strings.TrimRight(proxyURL, "/")
+
 	// 1. Load X25519 private key from Headscale
 	x25519Key, err := loadNoisePrivateKey(noiseKeyPath)
 	if err != nil {
@@ -1114,20 +1125,17 @@ func registerWithProxy(proxyURL, headscaleURL, noiseKeyPath string) (Registratio
 		return RegistrationResult{}, fmt.Errorf("failed to decode verify response: %w", err)
 	}
 
-	log.Printf("✓ Registered at: %s", verifyResp.PublicURL)
-	if verifyResp.Fingerprint != localFingerprint {
-		return RegistrationResult{}, fmt.Errorf("proxy verify fingerprint mismatch: local=%s proxy=%s", localFingerprint, verifyResp.Fingerprint)
+	// Never trust the proxy: check its URLs against the locally derived
+	// fingerprint and the locally configured base domain.
+	if err := verifyRegistrationURLs(localFingerprint, baseDomain, verifyResp); err != nil {
+		return RegistrationResult{}, err
 	}
-	if verifyResp.PublicURL != publicURLFromFingerprint(localFingerprint) {
-		return RegistrationResult{}, fmt.Errorf("proxy public URL mismatch: expected=%s got=%s", publicURLFromFingerprint(localFingerprint), verifyResp.PublicURL)
-	}
-	if !strings.HasPrefix(verifyResp.TunnelURL, "wss://"+localFingerprint+".headfwd.net/") {
-		return RegistrationResult{}, fmt.Errorf("proxy tunnel URL mismatch: got=%s", verifyResp.TunnelURL)
-	}
+	publicURL := publicURLFromFingerprint(localFingerprint, baseDomain)
+	log.Printf("✓ Registered at: %s", publicURL)
 	return RegistrationResult{
 		Fingerprint: localFingerprint,
-		TunnelURL:   verifyResp.TunnelURL,
-		PublicURL:   verifyResp.PublicURL,
+		TunnelURL:   verifyResp.TunnelURL, // host verified above; carries the proxy-issued auth secret
+		PublicURL:   publicURL,
 	}, nil
 }
 

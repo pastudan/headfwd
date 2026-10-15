@@ -25,6 +25,11 @@ services:
       - "3001:3001" # Portal web UI (when PORTAL_ENABLED=true)
     environment:
       AUTO_REGISTER: ${AUTO_REGISTER:-true}
+      # Proxy to register with. Its host is the public base domain the sidecar
+      # expects (<fingerprint>.<domain>) unless PROXY_DOMAIN is set. Both are
+      # local config; the sidecar never takes the domain from the proxy.
+      PROXY_URL: ${PROXY_URL:-https://headfwd.net}
+      PROXY_DOMAIN: ${PROXY_DOMAIN:-}
       RESTART_HEADSCALE: ${RESTART_HEADSCALE:-false}
       HEADSCALE_CONTAINER_NAME: ${HEADSCALE_CONTAINER_NAME:-headscale}
       PORTAL_ENABLED: ${PORTAL_ENABLED:-true}
