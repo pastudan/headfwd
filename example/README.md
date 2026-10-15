@@ -88,18 +88,14 @@ docker exec headfwd-headscale headscale nodes list
 - `headscale/config/config.yaml` - Headscale configuration
 - `backend/Caddyfile` - Backend web server config
 
-## Next Steps (Phase 1 Backend)
+## Next Steps: Use Your Own App
 
-Replace the Caddy backend with a real music server:
+The Caddy backend is only a placeholder. HeadFwd works with any self-hosted app:
 
-1. Build a Go/Python/Node backend with:
-   - Music library indexing
-   - REST API for metadata
-   - Audio streaming endpoint
-   
-2. Update `docker-compose.yml` to use custom backend image
-
-3. Connect iOS app to backend via Tailscale mesh IP
+1. Replace the `backend` service in `docker-compose.yml` with your app's image.
+2. Add the HeadFwd sidecar next to Headscale so devices can reach it from anywhere through the proxy. See the root [`docker-compose.yml`](../docker-compose.yml) and [`QUICKSTART.md`](../QUICKSTART.md).
+3. Optionally, set the sidecar's `UPSTREAM_URL` to your app. The sidecar portal then proxies non-`/api/*` traffic to it and adds `X-Tailscale-{User,Login,Device,IP}` identity headers.
+4. Connect clients (the iOS app in [`ios/`](../ios/README.md) or any Tailscale client) and reach your app over the mesh.
 
 ## Useful Commands
 

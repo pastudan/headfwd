@@ -139,13 +139,13 @@ To connect an iOS device:
 
 **Note:** For production, you'd want HTTPS and a proper domain. This is for local dev only.
 
-### 3. Build Your Real Backend
+### 3. Swap in Your Own App
 
-When you're ready to build the actual music server (Phase 1 from dev-plan.md):
+The Caddy backend is a placeholder. To use HeadFwd with your own self-hosted app:
 
-1. Replace the `backend` service in `docker-compose.yml`
-2. Your new backend will automatically be on the same Docker network
-3. Add Tailscale to your backend container for mesh access
+1. Replace the `backend` service in `docker-compose.yml` with your app
+2. Your app will automatically be on the same Docker network
+3. Add the HeadFwd sidecar (see the root [`QUICKSTART.md`](../QUICKSTART.md)) so devices can reach it remotely
 4. Use the same Headscale setup
 
 ## Troubleshooting
@@ -181,11 +181,11 @@ docker exec backend wget -O- http://localhost
 
 Once you have devices connected:
 
-1. **Phase 1** (Backend): Build the music server
-2. **Phase 3** (iOS): Build the iOS app
-3. **Phase 4** (Integration): Connect iOS to backend via mesh
+1. **Your app:** Replace the placeholder backend with the app you want to reach remotely
+2. **Remote access:** Run the HeadFwd sidecar and proxy (see the root [`QUICKSTART.md`](../QUICKSTART.md))
+3. **Clients:** Build the example iOS app ([`ios/README.md`](../ios/README.md)) or use any Tailscale client
 
-See `docs/dev-plan.md` for the full roadmap.
+See the root [`README.md`](../README.md) for how the pieces fit together.
 
 ## Architecture Reminder
 

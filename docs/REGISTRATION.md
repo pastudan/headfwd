@@ -16,6 +16,27 @@ The proof is an **X25519 ECDH + HKDF-SHA256 + HMAC-SHA256** exchange: the sideca
 4. **Replay Protection**: Each nonce is single-use
 5. **Collision Resistance**: 128-bit fingerprints provide ~3.4×10³⁸ unique values
 
+## Why ECDH + HMAC Instead of a Signature
+
+Headscale's Noise key is a **Curve25519 (X25519)** key meant for ECDH key
+exchange. It is **not** an Ed25519 signing key, so the sidecar cannot simply
+sign the challenge nonce. That would need either a separate signing key or a
+Curve25519→Ed25519 conversion.
+
+Registration proves ownership with ECDH instead:
+
+1. On `init`, the proxy generates a per-challenge **ephemeral X25519 keypair**
+   and returns its public key (`proxyPublicKey`) with the nonce.
+2. The sidecar computes `sharedSecret = X25519(noisePrivateKey, proxyPublicKey)`
+   and derives the proof from it (see [Proof Scheme](#proof-scheme)).
+3. On `verify`, the proxy computes the same secret as
+   `X25519(ephemeralPrivateKey, sidecarPublicKey)` and checks the proof in
+   constant time.
+
+ECDH is symmetric, so only the holder of Headscale's Noise **private** key can
+produce a matching proof. This proves ownership with no signing key, no key
+conversion, no new secrets to manage and no changes to Headscale.
+
 ## Registration Flow
 
 ```mermaid
@@ -28,7 +49,7 @@ sequenceDiagram
     Proxy->>Proxy: Compute fingerprint (SHA256 → hex32)
     Proxy->>Proxy: Generate nonce + ephemeral X25519 keypair
     Proxy->>Proxy: Store challenge (fingerprint → nonce, ephemeral priv)
-    Proxy-->>Sidecar: {fingerprint, nonce, proxyPublicKey, expiresAt}
+    Proxy-->>Sidecar: {fingerprint, nonce, proxyPublicKey, expiresAt, protocolVersion}
 
     Note over Sidecar: sharedSecret = ECDH(noisePriv, proxyPublicKey)<br/>k = HKDF(sharedSecret, salt=nonce, info=label)<br/>proof = HMAC-SHA256(k, transcript)
     Sidecar->>Proxy: POST /api/register/verify<br/>{fingerprint, proof}
@@ -83,16 +104,19 @@ Content-Type: application/json
   "fingerprint": "b4ff5ae7bbf053c9bd58d16df68702e0",
   "nonce": "a1b2c3d4e5f6789...",
   "proxyPublicKey": "9f86d081884c7d65...",
-  "expiresAt": 1738449600000
+  "expiresAt": 1738449600000,
+  "protocolVersion": 2
 }
 ```
 
 **What Happens:**
-1. Proxy computes `fingerprint = SHA256(publicKey).substring(0, 32)`
-2. Proxy generates a random 32-byte nonce
-3. Proxy generates an ephemeral X25519 keypair for this challenge
-4. Proxy stores `{publicKey, nonce, ephemeralPrivateKey}` with a 5-minute TTL
-5. Returns the challenge (including its ephemeral **public** key) to the sidecar
+1. Proxy rejects the request unless `publicKey` is `mkey:` followed by valid hex (`400`)
+2. Proxy computes `fingerprint = SHA256(publicKey).substring(0, 32)`
+3. If an unexpired challenge already exists for that fingerprint, proxy returns `409 Conflict`, so nobody can overwrite a registration in flight
+4. Proxy generates a random 32-byte nonce
+5. Proxy generates an ephemeral X25519 keypair for this challenge
+6. Proxy stores `{publicKey, nonce, ephemeralPrivateKey}` with a 5-minute TTL
+7. Returns the challenge (including its ephemeral **public** key) to the sidecar
 
 ### Phase 2: Proof Verification
 
@@ -117,15 +141,15 @@ Content-Type: application/json
 ```
 
 **What Happens:**
-1. Proxy retrieves the stored challenge for the fingerprint
+1. Proxy retrieves the stored challenge for the fingerprint. If it is missing, expired, or has already had 5 attempts, the challenge is deleted and the proxy returns `400`
 2. Proxy computes `sharedSecret = X25519(ephemeralPrivateKey, sidecarPublicKey)`
 3. Proxy verifies `HMAC-SHA256(HKDF(sharedSecret, salt=nonce, info=label), transcript) == proof` (timing-safe compare)
 4. If valid:
-   - Generate tunnel secret
-   - Store `{publicKey, secret}` with a 1-year TTL
+   - Generate a random 256-bit tunnel secret
+   - Store `{publicKey, secret}` in memory (it lasts until the proxy restarts; the sidecar then re-registers automatically)
    - Delete challenge (single-use)
    - Return tunnel credentials
-5. If invalid: Return 403 Forbidden
+5. If invalid: Return `403 Forbidden`; the attempt still counts toward the limit of 5
 
 Because ECDH is symmetric, the sidecar independently derives the same shared secret as `X25519(noisePrivateKey, proxyPublicKey)` — so only the holder of Headscale's Noise private key can produce a matching HMAC.
 
@@ -143,7 +167,9 @@ It uses the existing Headscale Noise X25519 key and does **not** introduce new k
 
 If the fingerprint does **not** match, the client must abort. This detects a proxy misroute or key substitution.
 
-### Step 1 (Planned): Online Attestation Using Noise Key
+### Step 1 (Planned, not implemented): Online Attestation Using Noise Key
+
+> **Not implemented.** No `/api/attest` endpoint exists in the sidecar today. This section is a design sketch.
 
 Add a small endpoint (e.g. `/api/attest`) on the Headscale sidecar to prove possession of the Noise private key.
 
@@ -155,9 +181,10 @@ Add a small endpoint (e.g. `/api/attest`) on the Headscale sidecar to prove poss
 }
 ```
 
-**Server behavior:**
+**Server behavior** (the same construction as the registration proof, with its own domain-separation label):
 1. Compute `sharedSecret = X25519(noisePrivateKey, clientPublicKey)`
-2. Return `proof = HMAC-SHA256(sharedSecret, nonce)`
+2. Derive `k = HKDF-SHA256(sharedSecret, salt=nonce, info="headfwd attestation v1")`
+3. Return `proof = HMAC-SHA256(k, transcript)`, where the transcript is a length-prefixed `label ‖ fingerprint ‖ noisePublicKey ‖ nonce ‖ clientPublicKey`
 
 **Response:**
 ```json
@@ -167,17 +194,17 @@ Add a small endpoint (e.g. `/api/attest`) on the Headscale sidecar to prove poss
 ```
 
 **Client verification:**
-1. Compute the same `sharedSecret = X25519(clientPrivateKey, serverPublicKey)`
-2. Verify `HMAC-SHA256(sharedSecret, nonce)` matches the response
+1. Compute the same `sharedSecret = X25519(clientPrivateKey, noisePublicKey)`
+2. Derive the same key and transcript, then compare against the response in constant time
 
-This provides an **interactive proof of key possession** without adding new keys.
+This provides an **interactive proof of key possession** without adding new keys. Do not use the raw ECDH output as the HMAC key over the bare nonce. That was the v1 registration construction, and [Protocol versions](#protocol-versions) explains why it was replaced.
 
 ## Cryptographic Details
 
 ### Key Types
-- **Noise Protocol**: Headscale uses Noise_IK pattern with Curve25519/Ed25519
+- **Noise Protocol**: Headscale's TS2021 control protocol uses Noise_IK with an X25519 static key
 - **Public Key Format**: `mkey:` prefix + 64 hex characters (32 bytes)
-- **Private Key**: 64 bytes (32-byte seed + 32-byte public key)
+- **Private Key**: 32-byte X25519 key, stored on disk as `privkey:` + 64 hex characters (`noise_private.key`)
 
 ### Proof Scheme
 - **Key agreement**: X25519 ECDH between Headscale's Noise key and the proxy's per-challenge ephemeral key
@@ -220,6 +247,21 @@ survive the upgrade untouched.
 ### Storage
 - In-memory maps in a single proxy process (challenges + registrations). If the proxy restarts, the sidecar simply re-registers automatically.
 
+## Abuse Controls
+
+Registration is unauthenticated by design: anyone can register a subdomain they can prove they hold the key for. Both endpoints do real crypto work (X25519 keygen on `init`, ECDH + HKDF on `verify`), so the proxy bounds them:
+
+| Control | Value | Response |
+|---|---|---|
+| Rate limit (both `/api/register/init` and `/api/register/verify`) | Token bucket per client IP: 30 requests/min, burst of 10 | `429 Too Many Requests` |
+| Request body size | 8 KiB max | `400` |
+| Malformed public key on `init` | Must be `mkey:` + valid hex | `400` |
+| Concurrent `init` for the same fingerprint | Refused while an unexpired challenge exists | `409 Conflict` |
+| Failed proofs | Challenge deleted after 5 attempts | `400` (challenge gone) |
+| Challenge lifetime | 5 minutes, single-use | `400` once expired |
+
+The rate limiter is in-memory and per proxy instance, which avoids adding a shared-store dependency to a single static binary. The client IP is taken from `Fly-Client-IP`, then the first `X-Forwarded-For` entry, then the connection's remote address. Those headers can be spoofed if the proxy is exposed without a trusted front proxy; the worst case is an attacker evading their own rate limit. See `headfwd-proxy/ratelimit.go`.
+
 ## Sidecar Implementation
 
 ### Command-Line Usage
@@ -259,6 +301,7 @@ The sidecar automatically searches for Noise private key in:
 2. `/var/lib/headscale/noise_private.key`
 3. `/keys/noise_private.key` (Docker mount)
 4. `./headscale/data/noise_private.key` (local dev)
+5. `../headscale/data/noise_private.key` (local dev, running from `headfwd-sidecar/`)
 
 ## Attack Resistance
 
@@ -266,15 +309,15 @@ The sidecar automatically searches for Noise private key in:
 - **Attack**: Guess valid subdomains by trying random fingerprints
 - **Defense**: 
   - 128-bit fingerprints = 2^128 possibilities
-  - Without private key, cannot generate valid signatures
+  - Without the private key, cannot produce a valid proof
   - Challenge-response prevents unauthorized registration
 
 ### Replay Attacks
-- **Attack**: Reuse captured nonce/signature pairs
+- **Attack**: Reuse a captured nonce/proof pair
 - **Defense**:
   - Nonces are single-use (deleted after verification)
   - 5-minute expiration on challenges
-  - New signature required for each registration
+  - Each proof is bound to its nonce and the proxy's per-challenge ephemeral key, so a new proof is required for each registration
 
 ### Man-in-the-Middle
 - **Attack**: Intercept registration traffic
@@ -303,11 +346,13 @@ The sidecar automatically searches for Noise private key in:
 
 ## Future Enhancements
 
-1. **Rate Limiting**: Add rate limits on `/api/register/init` (e.g., 10 req/min per IP)
-2. **Key Rotation**: Support for rotating tunnel secrets
-3. **Revocation**: API endpoint to revoke tunnel access
-4. **Monitoring**: Track registration attempts and failed verifications
-5. **Multi-Key**: Support for registering multiple Headscale instances with one account
+Rate limiting is already implemented (see [Abuse Controls](#abuse-controls)). Still open:
+
+1. **Key Rotation**: Support for rotating tunnel secrets
+2. **Revocation**: API endpoint to revoke tunnel access
+3. **Monitoring**: Track registration attempts and failed verifications
+4. **Multi-Key**: Support for registering multiple Headscale instances with one account
+5. **Online Attestation**: The `/api/attest` endpoint sketched in [Client Verification](#client-verification-custom-clients)
 
 ## References
 
