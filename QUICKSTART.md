@@ -2,30 +2,40 @@
 
 Get Headscale accessible from anywhere in 3 steps.
 
-## 1. Deploy Proxy (5 minutes)
+## 1. Pick a Proxy (0–15 minutes)
 
-The proxy runs on Fly.io:
+**Public proxy (default):** nothing to do. The sidecar registers with `https://headfwd.net`, and you'll be reachable at `https://<fingerprint>.headfwd.net`.
+
+**Your own proxy** on Fly.io, on a domain you control (`example.com` below):
 
 ```bash
 cd headfwd-proxy
 fly launch --no-deploy
-fly secrets set PUBLIC_HOST=headfwd.net
+fly secrets set PUBLIC_HOST=example.com
 fly deploy
+fly certs add example.com
+fly certs add "*.example.com"
+fly certs setup "*.example.com"   # shows the DNS records to add, incl. the _acme-challenge CNAME
 ```
+
+See [`headfwd-proxy/README.md`](headfwd-proxy/README.md) for the full DNS and certificate walkthrough.
 
 > The earlier Cloudflare Workers version is parked on the `cloudflare-proxy` branch until Workers can proxy TS2021's custom HTTP Upgrade.
 
 ## 2. Start Headscale + Sidecar (5 minutes)
 
-The sidecar auto-registers with the proxy (X25519 ECDH + HMAC-SHA256), derives your
-`<fingerprint>.headfwd.net` subdomain from Headscale's Noise key, opens the tunnel,
-and can update Headscale's `server_url` for you.
+The sidecar auto-registers with the proxy (X25519 ECDH + HMAC-SHA256). It works out your
+`<fingerprint>.<domain>` URL locally: the fingerprint from Headscale's Noise key, and the domain
+from the proxy URL you configured (`headfwd.net` by default). It opens the tunnel and can update
+Headscale's `server_url` for you.
 
 ```bash
 cd ..
 
 # Start Headscale + sidecar (sidecar has --register / AUTO_REGISTER=true by default)
 docker compose up -d
+# ...or, with your own proxy:
+# PROXY_URL=https://example.com docker compose up -d
 
 # Create a user
 docker compose exec headscale headscale users create default
@@ -46,6 +56,10 @@ go build
   --headscale "http://localhost:8080" \
   --noise-key "/var/lib/headscale/noise_private.key"
 ```
+
+For your own proxy, use `--proxy "https://example.com"`. If you register at a host that differs
+from the public base domain (e.g. `https://api.example.com` while sidecars live at
+`<fingerprint>.example.com`), add `--proxy-domain example.com` (or `PROXY_DOMAIN=example.com`).
 
 ## 3. Connect a Client (2 minutes)
 
@@ -77,7 +91,7 @@ ping 100.64.0.1  # Or whatever IP was assigned
 
 ## Done! 🎉
 
-Your Headscale is now accessible via `https://abc123.headfwd.net` even though it's behind NAT.
+Your Headscale is now accessible via `https://abc123.headfwd.net` (or `https://abc123.example.com` on your own proxy) even though it's behind NAT.
 
 ## Troubleshooting
 
@@ -98,6 +112,12 @@ curl https://abc123.headfwd.net/health
 # Check Headscale logs
 docker compose logs headscale
 ```
+
+**`proxy issued public URL on "X" but this sidecar expects "Y"`:**
+- The proxy is handing out URLs on a domain other than the one the sidecar was configured for.
+- If you run the proxy: `fly secrets set PUBLIC_HOST=Y`.
+- Otherwise check `--proxy` / `PROXY_URL` and `--proxy-domain` / `PROXY_DOMAIN` on the sidecar.
+- The sidecar deliberately refuses to adopt a domain from the proxy (see `.cursor/rules/NEVER-TRUST-PROXY.md`).
 
 **"Headscale not connected" error:**
 - Sidecar needs to be running first

@@ -68,14 +68,21 @@ See **[`docs/ios-key-verification.md`](docs/ios-key-verification.md)** for the f
 
 ### 1. Deploy Proxy
 
-You can use the public proxy at `headfwd.net`, or run your own on Fly.io:
+**Using the public proxy at `headfwd.net`?** Skip this step; it's the sidecar's default.
+
+**Running your own** on Fly.io, on a domain you control (`example.com` here):
 
 ```bash
 cd headfwd-proxy
 fly launch --no-deploy
-fly secrets set PUBLIC_HOST=headfwd.net
+fly secrets set PUBLIC_HOST=example.com   # sidecars will live at <fingerprint>.example.com
 fly deploy
+fly certs add example.com
+fly certs add "*.example.com"
+# then add the DNS records `fly certs setup` prints (A/AAAA + the _acme-challenge CNAME for the wildcard)
 ```
+
+The full walkthrough (DNS, certificates, checks) is in [`headfwd-proxy/README.md`](headfwd-proxy/README.md).
 
 ### 2. Run Headscale + Sidecar
 
@@ -93,6 +100,8 @@ go build
   --headscale "http://localhost:8080" \
   --noise-key "/var/lib/headscale/noise_private.key"
 ```
+
+On your own proxy, pass `--proxy "https://example.com"` instead. With docker compose, use `PROXY_URL=https://example.com docker compose up -d`. The sidecar takes the expected public domain from that URL's host. If you register at a different host than the one sidecars are served under, pass `--proxy-domain` / `PROXY_DOMAIN` as well. The sidecar never takes the domain from the proxy; it rejects any tunnel or public URL that isn't `<its fingerprint>.<that domain>`.
 
 **Option B: Manual Registration**
 ```bash
@@ -133,7 +142,7 @@ Clients scan a local QR code, connect to `https://abc123.headfwd.net` instead of
 * The proxy only relays encrypted control traffic — no per-GB data egress for the control plane
 
 If you want to use my public `headfwd.net` relay:
-* Nothing. It's free, and I plan to keep it online for good. And if it ever does go away, you're not locked in: your keys and fingerprint stay the same, so you point the sidecar at another proxy with `--proxy`, re-register, and have your devices scan a fresh QR code.
+* Nothing. It's free, and I plan to keep it online for good. And if it ever does go away, you're not locked in. Your keys and fingerprint stay the same, so you [run your own proxy](headfwd-proxy/README.md) and restart the sidecar with `--proxy https://your-domain` (plus `--proxy-domain` if you register at a different host). It re-registers and moves Headscale's `server_url` to `https://<fingerprint>.your-domain` for you. Then you restart Headscale and have your devices scan a fresh QR code.
 
 ## Security Properties at a Glance
 
@@ -145,6 +154,7 @@ If you want to use my public `headfwd.net` relay:
 - **Time-Limited Challenges** - 5-minute nonce expiration prevents replay attacks
 - **No Subdomain Enumeration** - Can't guess valid tunnels without private key
 - **Never Trust the Proxy** - Fingerprints must be derived locally from Headscale's Noise public key and proxy-provided URLs must be verified against local derivation
+- **Locally Pinned Domain** - The public base domain comes from the sidecar's own `--proxy` / `--proxy-domain` config, never from the proxy, so a proxy can't move a sidecar onto another domain
 
 For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATION.md).
 
@@ -162,9 +172,9 @@ For detailed security architecture, see [`docs/REGISTRATION.md`](docs/REGISTRATI
 1. Point Claude at this repo and say "integrate it"
 
 Or, if you prefer the human route:
-1. Use the public `headfwd.net` proxy, or deploy your own on Fly.io
+1. Use the public `headfwd.net` proxy, or [deploy your own](headfwd-proxy/README.md) on your own domain
 2. Run Headscale + sidecar; the sidecar auto-registers with challenge-response auth
-3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net`
+3. Point Headscale's `server_url` at your `<fingerprint>.headfwd.net` (or `<fingerprint>.<your-domain>`); the sidecar does this for you by default
 4. Build and connect the iOS app (or any Tailscale client) via QR onboarding
 
 ## License
