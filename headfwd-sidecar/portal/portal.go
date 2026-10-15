@@ -5,11 +5,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
+	"os"
 	"strings"
 
 	"github.com/headfwd/sidecar/portal/admin"
 	"github.com/headfwd/sidecar/portal/handlers"
 	"github.com/headfwd/sidecar/portal/headscale"
+	"github.com/headfwd/sidecar/portal/identity"
 	portalmiddleware "github.com/headfwd/sidecar/portal/middleware"
 )
 
@@ -40,7 +43,11 @@ type Config struct {
 	StateDir string
 }
 
-func NewServer(cfg Config) http.Handler {
+// NewServer builds the portal handler for one listener. ln decides how a
+// caller's peer address is interpreted (see package identity): only the LAN
+// listener grants loopback/RFC 1918 callers local admin, and only the tailnet
+// listener maps callers to headscale users.
+func NewServer(cfg Config, ln identity.Listener) http.Handler {
 	hsClient := headscale.NewClient(cfg.HeadscaleURL, cfg.APIKey)
 
 	var adminStore *admin.Store
@@ -58,13 +65,13 @@ func NewServer(cfg Config) http.Handler {
 		}
 	}
 
-	adminMW := portalmiddleware.AdminOnly(adminStore, hsClient)
+	adminMW := portalmiddleware.AdminOnly(adminStore, hsClient, ln)
 
-	helloHandlers := &handlers.HelloHandlers{HS: hsClient}
+	helloHandlers := &handlers.HelloHandlers{HS: hsClient, Listener: ln}
 	userHandlers := &handlers.UserHandlers{HS: hsClient}
 	keyHandlers := &handlers.KeyHandlers{HS: hsClient, PublicURL: cfg.PublicURL, TailnetServerFunc: cfg.TailnetServerFunc}
 	nodeHandlers := &handlers.NodeHandlers{HS: hsClient}
-	meHandlers := &handlers.MeHandlers{HS: hsClient, Store: adminStore}
+	meHandlers := &handlers.MeHandlers{HS: hsClient, Store: adminStore, Listener: ln}
 	adminHandlers := &handlers.AdminHandlers{Store: adminStore, HS: hsClient}
 
 	mux := http.NewServeMux()
@@ -87,7 +94,7 @@ func NewServer(cfg Config) http.Handler {
 	mux.Handle("DELETE /api/admins/{name}", adminMW(http.HandlerFunc(adminHandlers.Revoke)))
 
 	if cfg.UpstreamURL != "" {
-		upstream, err := handlers.NewUpstreamHandler(cfg.UpstreamURL, hsClient)
+		upstream, err := handlers.NewUpstreamHandler(cfg.UpstreamURL, hsClient, ln)
 		if err != nil {
 			log.Printf("Warning: upstream proxy setup failed (%s): %v", cfg.UpstreamURL, err)
 		} else {
@@ -105,20 +112,26 @@ func NewServer(cfg Config) http.Handler {
 		serveFrontend(mux)
 	}
 
-	return corsMiddleware(mux)
+	// No CORS headers: the portal UI is same-origin (embedded, or reached via the
+	// Vite dev proxy / iOS 127.0.0.1 proxy), so browsers need none. The API's
+	// authentication is the caller's address, so letting other origins read
+	// responses would hand them admin.
+	return apiGuard(mux, allowedHostsFromEnv())
 }
 
 // ListenAndServe starts the portal HTTP server on its configured LAN port. Blocks until error.
+// Loopback/RFC 1918 callers on this listener are treated as local admins.
 func ListenAndServe(cfg Config) error {
 	addr := ":" + cfg.Port
 	log.Printf("Portal starting on %s (headscale: %s)", addr, cfg.HeadscaleURL)
-	return http.ListenAndServe(addr, NewServer(cfg))
+	return http.ListenAndServe(addr, NewServer(cfg, identity.LAN))
 }
 
-// ServeOn starts serving the portal on an already-accepted listener (e.g. a tsnet listener).
+// ServeOn starts serving the portal on an already-accepted tsnet listener.
+// Callers are identified only by their tailnet node; nobody is a local admin.
 // It does not block; errors are logged. Call this before ListenAndServe.
 func ServeOn(cfg Config, ln net.Listener) {
-	handler := NewServer(cfg)
+	handler := NewServer(cfg, identity.Tailnet)
 	srv := &http.Server{Handler: handler}
 	go func() {
 		log.Printf("Portal also serving on tailnet listener %s", ln.Addr())
@@ -190,17 +203,76 @@ func serveFrontend(mux *http.ServeMux) {
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// apiGuard protects /api/* from browser-borne attacks. The portal authenticates
+// by network address, so any web page a LAN or tailnet user visits could
+// otherwise act with that user's privileges:
+//
+//   - Cross-site requests: http.CrossOriginProtection rejects non-GET/HEAD
+//     requests a browser marks as coming from another origin (Sec-Fetch-Site,
+//     falling back to Origin vs Host). Non-browser clients are unaffected.
+//   - DNS rebinding: an attacker's domain re-pointed at the portal's IP makes
+//     the browser treat requests as same-origin, defeating the check above. So
+//     the Host header must be a name an attacker cannot re-point: an IP
+//     literal, localhost, a single-label name, a .local mDNS name, or a host
+//     listed in PORTAL_ALLOWED_HOSTS.
+//
+// Non-/api paths (the embedded UI or the UPSTREAM_URL app) pass through; the
+// upstream app is responsible for its own CSRF protection.
+func apiGuard(next http.Handler, allowedHosts map[string]bool) http.Handler {
+	cop := http.NewCrossOriginProtection()
+	protected := cop.Handler(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
+		if r.URL.Path != "/api" && !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
 			return
 		}
-
-		next.ServeHTTP(w, r)
+		if !hostAllowed(r.Host, allowedHosts) {
+			log.Printf("[portal] rejected %s %s: Host %q not allowed (set PORTAL_ALLOWED_HOSTS to permit it)", r.Method, r.URL.Path, r.Host)
+			http.Error(w, `{"error":"host not allowed"}`, http.StatusMisdirectedRequest)
+			return
+		}
+		protected.ServeHTTP(w, r)
 	})
+}
+
+// hostAllowed reports whether a Host header value is safe from DNS rebinding.
+func hostAllowed(hostport string, extra map[string]bool) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	if host == "localhost" || !strings.Contains(host, ".") {
+		return true // single-label LAN name; not resolvable via public DNS
+	}
+	for _, suffix := range privateDNSSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return extra[host]
+}
+
+// privateDNSSuffixes are names only a local resolver answers for, so an
+// attacker cannot point them at the portal from the public internet.
+var privateDNSSuffixes = []string{
+	".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain",
+}
+
+// allowedHostsFromEnv parses PORTAL_ALLOWED_HOSTS: comma-separated hostnames
+// (no port) that may be used to reach the portal API, e.g. a MagicDNS name.
+func allowedHostsFromEnv() map[string]bool {
+	m := map[string]bool{}
+	for _, h := range strings.Split(os.Getenv("PORTAL_ALLOWED_HOSTS"), ",") {
+		if h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), ".")); h != "" {
+			m[h] = true
+		}
+	}
+	return m
 }

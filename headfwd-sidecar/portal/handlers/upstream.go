@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/headfwd/sidecar/portal/headscale"
+	"github.com/headfwd/sidecar/portal/identity"
 )
 
 // Identity headers injected by the proxy. These are stripped from incoming
@@ -19,6 +19,14 @@ var identityHeaders = []string{
 	"X-Tailscale-Login",
 	"X-Tailscale-Device",
 	"X-Tailscale-IP",
+}
+
+// Client-supplied address headers that must never reach the upstream app.
+// (httputil.ReverseProxy with Rewrite already drops X-Forwarded-For/Host/Proto
+// from the outbound request; these are the remaining common variants.)
+var clientAddressHeaders = []string{
+	"X-Real-Ip",
+	"Forwarded",
 }
 
 // UpstreamHandler reverse-proxies all requests to a configured backend URL,
@@ -31,15 +39,20 @@ var identityHeaders = []string{
 //	X-Tailscale-Login  — same value; alias for apps expecting this name
 //	X-Tailscale-Device — unique MagicDNS device name (e.g. "headfwd-ios-mrsyme5m")
 //	X-Tailscale-IP     — client tailnet IP (e.g. "100.64.0.10")
+//	X-Forwarded-For    — the TCP peer address only (any client value is replaced)
 //
-// Non-tailnet clients (local dev, internet) receive no identity headers.
+// Identity headers are only ever set for requests that arrived on the tailnet
+// listener from a tailnet address. Requests on the LAN listener, and anything
+// else, reach the upstream with no identity headers.
 type UpstreamHandler struct {
 	proxy *httputil.ReverseProxy
 	cache nodeCache
 }
 
 // NewUpstreamHandler creates a reverse proxy that forwards to targetURL.
-func NewUpstreamHandler(targetURL string, hs *headscale.Client) (*UpstreamHandler, error) {
+// ln is the listener this handler serves; it decides whether a caller's peer
+// address may be mapped to a tailnet identity.
+func NewUpstreamHandler(targetURL string, hs *headscale.Client, ln identity.Listener) (*UpstreamHandler, error) {
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		return nil, err
@@ -47,47 +60,44 @@ func NewUpstreamHandler(targetURL string, hs *headscale.Client) (*UpstreamHandle
 
 	h := &UpstreamHandler{}
 
-	rp := httputil.NewSingleHostReverseProxy(target)
+	h.proxy = &httputil.ReverseProxy{
+		// Rewrite (unlike Director) strips hop-by-hop headers before this
+		// runs and removes the client's X-Forwarded-* headers from Out.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = pr.In.Host // keep NewSingleHostReverseProxy's Host behaviour
+			pr.SetXForwarded()       // X-Forwarded-For = TCP peer address, nothing else
 
-	// Wrap the default director to inject verified identity headers.
-	base := rp.Director
-	rp.Director = func(req *http.Request) {
-		base(req)
-
-		// Prevent clients from spoofing identity headers.
-		for _, hdr := range identityHeaders {
-			req.Header.Del(hdr)
-		}
-
-		remoteIP := extractIP(req)
-		if !strings.HasPrefix(remoteIP, "100.") && !strings.HasPrefix(remoteIP, "fd7a:") {
-			return // non-tailnet client — no identity headers
-		}
-
-		nodes, err := h.cache.get(hs)
-		if err != nil {
-			return // best-effort; log noise suppressed intentionally
-		}
-		for _, node := range nodes {
-			for _, ip := range node.IPAddresses {
-				if ip == remoteIP {
-					req.Header.Set("X-Tailscale-User", node.User.Name)
-					req.Header.Set("X-Tailscale-Login", node.User.Name)
-					req.Header.Set("X-Tailscale-Device", node.GivenName)
-					req.Header.Set("X-Tailscale-IP", remoteIP)
-					return
-				}
+			// Prevent clients from spoofing identity or address headers.
+			for _, hdr := range identityHeaders {
+				pr.Out.Header.Del(hdr)
 			}
-		}
+			for _, hdr := range clientAddressHeaders {
+				pr.Out.Header.Del(hdr)
+			}
+
+			caller := ln.Classify(pr.In)
+			if !caller.Tailnet || hs == nil {
+				return // not a tailnet peer on the tailnet listener — no identity
+			}
+			nodes, err := h.cache.get(hs)
+			if err != nil {
+				return // best-effort; log noise suppressed intentionally
+			}
+			if node := identity.FindNode(nodes, caller.IP); node != nil {
+				pr.Out.Header.Set("X-Tailscale-User", node.User.Name)
+				pr.Out.Header.Set("X-Tailscale-Login", node.User.Name)
+				pr.Out.Header.Set("X-Tailscale-Device", node.GivenName)
+				pr.Out.Header.Set("X-Tailscale-IP", caller.IP.String())
+			}
+		},
+		ErrorLog: log.New(log.Writer(), "[upstream] ", log.LstdFlags),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("[upstream] %s %s → %v", r.Method, r.URL.Path, err)
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		},
 	}
 
-	rp.ErrorLog = log.New(log.Writer(), "[upstream] ", log.LstdFlags)
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[upstream] %s %s → %v", r.Method, r.URL.Path, err)
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
-	}
-
-	h.proxy = rp
 	return h, nil
 }
 

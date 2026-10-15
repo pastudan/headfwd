@@ -3,10 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/headfwd/sidecar/portal/admin"
 	"github.com/headfwd/sidecar/portal/headscale"
+	"github.com/headfwd/sidecar/portal/identity"
 )
 
 // MeResponse is the response body for GET /api/me.
@@ -18,34 +18,28 @@ type MeResponse struct {
 
 // MeHandlers handles the /api/me endpoint.
 type MeHandlers struct {
-	HS    *headscale.Client
-	Store *admin.Store
+	HS       *headscale.Client
+	Store    *admin.Store
+	Listener identity.Listener
 }
 
 // Me returns the caller's identity and admin status.
 // This endpoint is unprotected — any tailnet peer (or local browser) can call it.
+// The answer must agree with middleware.AdminOnly, so it uses the same rules.
 func (h *MeHandlers) Me(w http.ResponseWriter, r *http.Request) {
-	ip := extractIP(r)
-	isLocal := isLocalIP(ip)
-	isTailnet := strings.HasPrefix(ip, "100.") || strings.HasPrefix(ip, "fd7a:")
+	caller := h.Listener.Classify(r)
 
 	var userName string
-	if isTailnet && h.HS != nil {
+	if caller.Tailnet && h.HS != nil {
 		if nodes, err := h.HS.ListNodes(); err == nil {
-			outer:
-			for _, node := range nodes {
-				for _, nodeIP := range node.IPAddresses {
-					if nodeIP == ip {
-						userName = node.User.Name
-						break outer
-					}
-				}
+			if node := identity.FindNode(nodes, caller.IP); node != nil {
+				userName = node.User.Name
 			}
 		}
 	}
 
-	isAdmin := isLocal
-	if !isLocal && h.Store != nil && userName != "" {
+	isAdmin := caller.Local
+	if !caller.Local && h.Store != nil && userName != "" {
 		isAdmin = h.Store.IsAdmin(userName)
 	}
 
@@ -53,6 +47,6 @@ func (h *MeHandlers) Me(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(MeResponse{
 		UserName:      userName,
 		IsAdmin:       isAdmin,
-		IsLocalAccess: isLocal,
+		IsLocalAccess: caller.Local,
 	})
 }
